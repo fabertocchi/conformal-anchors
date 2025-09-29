@@ -1,18 +1,255 @@
 import pandas as pd
 import numpy as np
+import random
 
-def generate_disease_labels(n_samples, disease_labels, disease_probs):
-    """Generate disease labels with realistic distribution (more common diseases have higher probabilities)"""
 
-    return np.random.choice(disease_labels, size=n_samples, p=disease_probs)
+# Number of patients
+N_SAMPLES = 1000
 
-def generate_generic_symptoms(n_samples, diseases, disease_labels):
+# Dictonary with, for each disease and for each test used for that disease, tuples of (probability, lower extreme of range, upper extreme of range)
+TESTS = {
+    'Bronchitis': {
+        'group': 'Lung', 
+        'tests': {
+            'pulmonary_function': [
+                (0.65, 70, 100),
+                (0.15, 60, 69),
+                (0.10, 50, 59),
+                (0.05, 40, 49),
+                (0.03, 30, 39),
+                (0.02, 15, 29)
+                # no values between 0 and 14 because are too unrealistic
+            ],
+            'chest_xray_score': [
+                (0.45, 0, 0),
+                (0.35, 1, 2),
+                (0.15, 3, 4),
+                (0.04, 5, 7),
+                (0.01, 8, 10),
+            ],
+            'sputum_neutrophil_percent':[
+                (0.05, 20, 39),
+                (0.20, 40, 54),
+                (0.35, 55, 69),
+                (0.30, 70, 84),
+                (0.10, 85, 100)
+            ],
+            'wbc_count': [
+                (0.10, 3000, 6000),
+                (0.35, 6001, 9000),
+                (0.38, 9001, 12000),
+                (0.18, 12001, 16000),
+                (0.05, 16001, 20000),
+                (0.02, 20001, 25000)
+            ]
+        }
+    },
+    'Copd': {
+        'group': 'Lung',
+        'tests': {
+            'pulmonary_function': [
+                (0.05, 70, 100),
+                (0.07, 60, 69),
+                (0.13, 50, 59),
+                (0.20, 40, 49),
+                (0.25, 30, 39),
+                (0.30, 15, 29)
+                # no values between 0 and 14 because are too unrealistic
+            ],
+            'chest_xray_score': [
+                (0.05, 0, 0),
+                (0.20, 1, 2),
+                (0.35, 3, 4),
+                (0.30, 5, 7),
+                (0.10, 8, 10)
+            ],
+            'sputum_neutrophil_percent': [
+                (0.25, 20, 39),
+                (0.35, 40, 54),
+                (0.25, 55, 69),
+                (0.10, 70, 84),
+                (0.05, 85, 100)
+            ],
+            'wbc_count': [
+                (0.20, 3000, 6000),
+                (0.45, 6001, 9000),
+                (0.25, 9001, 12000),
+                (0.08, 12001, 16000),
+                (0.019, 16001, 20000),
+                (0.001, 20001, 25000)
+            ]
+        }
+    },
+    'Pneumonia': {
+        'group': 'Lung',
+        'tests': {
+            'pulmonary_function': [
+                (0.25, 70, 100),
+                (0.25, 60, 69),
+                (0.20, 50, 59),
+                (0.15, 40, 49),
+                (0.10, 30, 39),
+                (0.05, 15, 29)
+                # no values between 0 and 14 because are too unrealistic
+            ],
+            'chest_xray_score': [
+                (0.05, 0, 0),
+                (0.15, 1, 2),
+                (0.25, 3, 4),
+                (0.35, 5, 7),
+                (0.20, 8, 10)
+            ],
+            'sputum_neutrophil_percent': [
+                (0.02, 20, 39),
+                (0.08, 40, 54),
+                (0.25, 55, 69),
+                (0.35, 70, 84),
+                (0.30, 85, 100)
+
+            ],
+            'wbc_count': [
+                (0.03, 3000, 6000),
+                (0.10, 6001, 9000),
+                (0.20, 9001, 12000),
+                (0.30, 12001, 16000),
+                (0.22, 16001, 20000),
+                (0.15, 20001, 25000)
+            ]
+        }
+    },
+    'Gastritis': {
+        'group': 'Stomach',
+        'tests': {
+            'endoscopy_score': [
+                (0.10, 0, 0),
+                (0.35, 1, 2),
+                (0.30, 3, 4),
+                (0.15, 5, 6),
+                (0.07, 7, 8),
+                (0.03, 9, 10)
+            ],
+            'h_pylori_level': [
+                (0.10, 0, 0),
+                (0.15, 1, 1),
+                (0.30, 2, 2),
+                (0.45, 3, 3)
+            ],
+            'hemoglobin': [
+                (0.01, 0, 8),
+                (0.03, 8.1, 10),
+                (0.12, 10.1, 12),
+                (0.40, 12.1, 14),
+                (0.35, 14.1, 16),
+                (0.09, 16.1, 18)
+            ],
+            'gastric_ph': [
+                (0.55, 1, 2),
+                (0.25, 3, 3),
+                (0.10, 4, 4),
+                (0.06, 5, 5),
+                (0.03, 6, 7),
+                (0.01, 8, 8)
+            ]
+        }
+    },
+    'Gastric_cancer': {
+        'group': 'Stomach',
+        'tests': {
+            'endoscopy_score': [
+                (0.00, 0, 0),
+                (0.02, 1, 2),
+                (0.10, 3, 4),
+                (0.20, 5, 6),
+                (0.35, 7, 8),
+                (0.33, 9, 10)
+            ],
+            'h_pylori_level': [
+                (0.25, 0, 0),
+                (0.30, 1, 1),
+                (0.25, 2, 2),
+                (0.20, 3, 3)
+            ],
+            'hemoglobin': [
+                (0.05, 0, 8),
+                (0.10, 8.1, 10),
+                (0.25, 10.1, 12),
+                (0.35, 12.1, 14),
+                (0.20, 14.1, 16),
+                (0.05, 16.1, 18)
+            ],
+            'gastric_ph': [
+                (0.30, 1, 2),
+                (0.25, 3, 3),
+                (0.20, 4, 4),
+                (0.15, 5, 5),
+                (0.07, 6, 7),
+                (0.03, 8, 8)
+            ]
+        }
+    },
+    'Peptic_ulcers': {
+        'group': 'Stomach',
+        'tests': {
+            'endoscopy_score': [
+                (0.02, 0, 0),
+                (0.05, 1, 2),
+                (0.20, 3, 4),
+                (0.40, 5, 6),
+                (0.25, 7, 8),
+                (0.08, 9, 10)
+            ],
+            'h_pylori_level': [
+                (0.15, 0, 0),
+                (0.15, 1, 1),
+                (0.30, 2, 2),
+                (0.40, 3, 3)
+            ],
+            'hemoglobin': [
+                (0.08, 0, 8),
+                (0.15, 8.1, 10),
+                (0.25, 10.1, 12),
+                (0.30, 12.1, 14),
+                (0.18, 14.1, 16),
+                (0.04, 16.1, 18)
+
+            ],
+            'gastric_ph': [
+                (0.65, 1, 2),
+                (0.20, 3, 3),
+                (0.08, 4, 4),
+                (0.04, 5, 5),
+                (0.02, 6, 7),
+                (0.01, 8, 8)
+            ]
+        }
+    }
+}
+
+# To extract names of the diseases
+DISEASE_NAMES = list(TESTS.keys())
+
+# Number of diseases
+N_DISEASES = len(DISEASE_NAMES)
+
+# To extract names
+TESTS_NAMES = list(set([test for disease_name in TESTS.keys() for test in TESTS[disease_name]['tests']]))
+
+# List of probabilities of each disease (uniform probability case)
+DISEASE_PROBS = [1 / N_DISEASES] * N_DISEASES
+
+
+def generate_disease_labels():
+    """Generate disease labels with UNIFORM distribution"""
+
+    return np.random.choice(DISEASE_NAMES, size=N_SAMPLES, p=DISEASE_PROBS)
+
+def generate_generic_symptoms(disease_labels):
     """Generate generic symptoms based on disease patterns"""
 
-    symptoms = np.zeros((n_samples, 6))
+    symptoms = np.zeros((N_SAMPLES, N_DISEASES))
 
     for i, disease in enumerate(disease_labels):
-        if diseases[disease]['group'] == "Lung":
+        if TESTS[disease]['group'] == "Lung":
             # Lung diseases: higher fever, cough, chest pain, moderate fatigue
             symptoms[i, 0] = np.random.beta(3, 2) * 10          # fever_severity (0-10)
             symptoms[i, 1] = np.random.beta(4, 1.5) * 10        # cough_severity 
@@ -39,7 +276,7 @@ def generate_generic_symptoms(n_samples, diseases, disease_labels):
             if np.random.random() < 0.12:  # 12% chance - often forgotten
                 symptoms[i, 4] = np.nan  # fatigue not recorded
 
-        else: # stomach diseases
+        else:
             # Stomach diseases: moderate fever, low cough, high abdominal pain, nausea
             symptoms[i, 0] = np.random.beta(2, 3) * 10          # fever_severity (lower)
             symptoms[i, 1] = np.random.beta(1, 4) * 10          # cough_severity (low)
@@ -76,80 +313,54 @@ def generate_generic_symptoms(n_samples, diseases, disease_labels):
 def generate_diagnostic_tests(disease_labels):
     """Generate disease-specific diagnostic test results"""
 
-    # Initialize all test columns with NaN
     test_data = {}
-    
-    # Define all possible tests
-    tests = [
 
-        # Lung tests
-        'pulmonary_function',           # FEV1% predicted (0-100%)
-        'chest_xray_score',             # Chest X-ray score (0-10)
-        'sputum_neutrophil_percent',    # Sputum neutrophil % (0-100%)
-        'wbc_count',                    # White blood cell count (3,000-25,000 cells/µL)
-        
-        # Stomach tests
-        'endoscopy_score',              # Endoscopy score (0-10)
-        'h_pylori_level',               # H. pylori level (0-3 categorical)
-        'hemoglobin',                   # Hemoglobin (5-18 g/dL)
-        'gastric_ph'                    # Gastric pH (1-8)
-    ]
+    # Initialize all test columns with NaN
+    for test_name in TESTS_NAMES:
+        test_data[test_name] = np.full(N_SAMPLES, np.nan)
 
-    for test in tests:
-        test_data[test] = np.full(n_samples, np.nan)
-
-    # Generate test values based on disease
     for i, disease in enumerate(disease_labels):
-        if disease == 'Bronchitis':
-            test_data['pulmonary_function'][i] = np.random.beta(2, 3) * 100             # moderately reduced function
-            test_data['chest_xray_score'][i] = np.random.beta(3, 2) * 10                # mild to moderate inflammation
-            test_data['sputum_neutrophil_percent'][i] = np.random.beta(4, 1) * 100      # high inflammation (range 0-100)
-            test_data['wbc_count'][i] = np.random.beta(2, 3) * 10000 + 8000             # elevated fighting infection
-            
-        elif disease == 'Copd':
-            test_data['pulmonary_function'][i] = np.random.beta(1, 4) * 100             # severely reduced
-            test_data['chest_xray_score'][i] = np.random.beta(4, 1) * 10                # clear abnormalities 
-            test_data['sputum_neutrophil_percent'][i] = np.random.beta(2, 2) * 60 + 20  # variable
-            test_data['wbc_count'][i] = np.random.beta(2, 2) * 16000 + 4000             # variable
-            
-        elif disease == 'Pneumonia':
-            test_data['pulmonary_function'][i] = np.random.beta(3, 2) * 30 + 60         # mildly reduced
-            test_data['chest_xray_score'][i] = np.random.beta(4, 1) * 10                # high (consolidation clearly visible)
-            test_data['sputum_neutrophil_percent'][i] = np.random.beta(4, 1) * 20 + 80  # very high (acute bacterial infection)
-            test_data['wbc_count'][i] = np.random.beta(3, 2) * 13000 + 12000            # very high (fighting acute infection)
-            
-        elif disease == 'Gastritis':
-            test_data['endoscopy_score'][i] = np.random.beta(4, 1) * 10                                 # high inflammation visible
-            test_data['h_pylori_level'][i] = np.random.choice([0, 1, 2, 3], p=[0.3, 0.25, 0.25, 0.2])   # 30% negative (0), 25% mild (1), 25% moderate (2), 20% heavy (3)
-            test_data['hemoglobin'][i] = np.random.beta(2, 3) * 6 + 10                                  # normal to slightly low 
-            test_data['gastric_ph'][i] = np.random.beta(2, 2) * 6 + 1                                   # variable
-            
-        elif disease == 'Gastric_cancer':
-            test_data['endoscopy_score'][i] = np.random.beta(4, 1) * 10                                 # very high, tumor visible
-            test_data['h_pylori_level'][i] = np.random.choice([0, 1, 2, 3], p=[0.4, 0.2, 0.2, 0.2])     # 40% negative (0), 20% each for 1,2,3
-            test_data['hemoglobin'][i] = np.random.beta(1, 3) * 7 + 5                                   # low (bleeding from tumor)
-            test_data['gastric_ph'][i] = np.random.beta(1, 3) * 7 + 1                                   # variable to high (loss of acid production)
-            
-        elif disease == 'Peptic_ulcers':
-            test_data['endoscopy_score'][i] = np.random.beta(4, 1) * 10                                 # high (ulcers visible)
-            test_data['h_pylori_level'][i] = np.random.choice([0, 1, 2, 3], p=[0.2, 0.2, 0.3, 0.3])     # 20% negative (0), 20% mild (1), 30% moderate (2), 30% heavy (3) 
-            test_data['hemoglobin'][i] = np.random.beta(2, 3) * 8 + 8                                   # variable (depends on bleeding)
-            test_data['gastric_ph'][i] = np.random.beta(1, 3) * 7 + 1                                   # low (acidic environment)
+        for test_name in TESTS[disease]['tests']:
+
+            # Generate probability from 0 to 1 inclusive
+            gen_prob = random.random()
+
+            for (disease_prob, range_low, range_high) in TESTS[disease]['tests'][test_name]:
+                
+                if gen_prob <= disease_prob:
+                    if type(range_low) is int:
+                        test_data[test_name][i] = random.randint(range_low, range_high)
+                        
+                    elif type(range_low) is float:
+                        test_data[test_name][i] = random.uniform(range_low, range_high)
+                        
+                    else:
+                        raise ValueError("Unexpected type: " + str(type(range_low)) + " for value " + str(range_low))
+                    
+                    break
+                    
+                gen_prob -= disease_prob
+                
     
     return test_data
 
-def generate_patient_data(diseases, disease_labels, disease_probs, n_samples=1000):
-    """Generate complete synthetic dataset"""
+def generate_patient_data():
+    """Generate complete synthetic dataset with both generic symptoms and specific test data"""
 
-    dis_labels = generate_disease_labels(n_samples, disease_labels, disease_probs)
-    symptoms = generate_generic_symptoms(n_samples, diseases, dis_labels)
-    test_data = generate_diagnostic_tests(dis_labels)
+    # Generate disease labels
+    disease_labels = generate_disease_labels()
+
+    # Generate symptoms data
+    symptoms = generate_generic_symptoms(disease_labels)
+
+    # Generate specific test data
+    test_data = generate_diagnostic_tests(disease_labels)
 
     # Create DataFrame
     df = pd.DataFrame({
-        'patient_id': range(1, n_samples + 1),
-        'disease': dis_labels,
-        'disease_group': [diseases[d]['group'] for d in dis_labels],
+        'patient_id': range(1, N_SAMPLES + 1),
+        'disease': disease_labels,
+        'disease_group': [TESTS[d]['group'] for d in disease_labels],
         'fever_severity': symptoms[:, 0],
         'cough_severity': symptoms[:, 1], 
         'chest_pain_severity': symptoms[:, 2],
@@ -164,35 +375,81 @@ def generate_patient_data(diseases, disease_labels, disease_probs, n_samples=100
 
     return df
 
+
+
+
+
+
+# def generate_diagnostic_tests(disease_labels):
+#     """Generate disease-specific diagnostic test results"""
+
+#     # Initialize all test columns with NaN
+#     test_data = {}
+
+#     # To generate columns with test names and initialize them with NANs
+#     for test_name in TESTS_NAMES:
+#         test_data[test_name] = np.full(n_samples, np.nan)
+
+#     for i, disease in enumerate(disease_labels):
+#         for test_name in TESTS[disease]["tests"]:
+#             gen_prob = np.random.random_integers(low=0, high=100)
+
+#             for (disease_prob, range_low, range_high) in TESTS[disease]["tests"][test_name]:
+#                 if gen_prob <= disease_prob:
+#                     # hai generato il range disease_range
+#                     test_result = np.random.random_integers(low=range_low, high=range_high)
+#                     test_data[test_name][i] = test_result
+#                     break
+                    
+#                 gen_prob -= disease_prob
+
+
+
+
+
+
+
 if __name__ == "__main__":
 
+
+
+    # # Definition of diseases and their group
+    # diseases = {
+    #         'Bronchitis': {'group': 'Lung', 'id': 0},
+    #         'Copd': {'group': 'Lung', 'id': 1}, 
+    #         'Pneumonia': {'group': 'Lung', 'id': 2},
+    #         'Gastritis': {'group': 'Stomach', 'id': 3},
+    #         'Gastric_cancer': {'group': 'Stomach', 'id': 4},
+    #         'Peptic_ulcers': {'group': 'Stomach', 'id': 5}
+    #     }
+
+    # # Definition of all possible tests
+    # tests = [
+
+    #     # Lung tests
+    #     'pulmonary_function',           # FEV1% predicted (0-100%)
+    #     'chest_xray_score',             # Chest X-ray score (0-10)
+    #     'sputum_neutrophil_percent',    # Sputum neutrophil % (0-100%)
+    #     'wbc_count',                    # White blood cell count (3,000-25,000 cells/µL)
+        
+    #     # Stomach tests
+    #     'endoscopy_score',              # Endoscopy score (0-10)
+    #     'h_pylori_level',               # H. pylori level (0-3 categorical)
+    #     'hemoglobin',                   # Hemoglobin (5-18 g/dL)
+    #     'gastric_ph'                    # Gastric pH (1-8)
+    # ]
+
+    
+
+    
     # Set seed for reproducibility
     np.random.seed(42)
-
-    # Number of patients
-    n_samples = 1000
-
-    # Definition of diseases and their group
-    diseases = {
-            'Bronchitis': {'group': 'Lung', 'id': 0},
-            'Copd': {'group': 'Lung', 'id': 1}, 
-            'Pneumonia': {'group': 'Lung', 'id': 2},
-            'Gastritis': {'group': 'Stomach', 'id': 3},
-            'Gastric_cancer': {'group': 'Stomach', 'id': 4},
-            'Peptic_ulcers': {'group': 'Stomach', 'id': 5}
-        }
-
-    # Extraction of disease labels and number of diseases
-    disease_labels = list(diseases.keys())
-    n_diseases = len(disease_labels)
-
-    # List of probabilities of each disease (uniform probability case)
-    disease_probs = [1/n_diseases] * n_diseases
+    
 
     # Generate dataset
-    df = generate_patient_data(diseases, disease_labels, disease_probs, 1000)
+    df = generate_patient_data()
 
-    df.to_csv('synthetic_patient_setting_base.csv', index=False)
+    df.to_csv('synthetic_patient_setting_base_new.csv', index=False)
     
     
     # Display basic info
@@ -205,3 +462,45 @@ if __name__ == "__main__":
     
     print("\nMissing data summary:")
     print(df.isnull().sum().sort_values(ascending=False))
+
+
+
+
+    # # Generate test values based on disease
+    # for i, disease in enumerate(disease_labels):
+    #     if disease == 'Bronchitis':
+    #         test_data['pulmonary_function'][i] = np.random.beta(2, 3) * 100             # moderately reduced function
+    #         test_data['chest_xray_score'][i] = np.random.beta(3, 2) * 10                # mild to moderate inflammation
+    #         test_data['sputum_neutrophil_percent'][i] = np.random.beta(4, 1) * 100      # high inflammation (range 0-100)
+    #         test_data['wbc_count'][i] = np.random.beta(2, 3) * 10000 + 8000             # elevated fighting infection
+            
+    #     elif disease == 'Copd':
+    #         test_data['pulmonary_function'][i] = np.random.beta(1, 4) * 100             # severely reduced
+    #         test_data['chest_xray_score'][i] = np.random.beta(4, 1) * 10                # clear abnormalities 
+    #         test_data['sputum_neutrophil_percent'][i] = np.random.beta(2, 2) * 60 + 20  # variable
+    #         test_data['wbc_count'][i] = np.random.beta(2, 2) * 16000 + 4000             # variable
+            
+    #     elif disease == 'Pneumonia':
+    #         test_data['pulmonary_function'][i] = np.random.beta(3, 2) * 30 + 60         # mildly reduced
+    #         test_data['chest_xray_score'][i] = np.random.beta(4, 1) * 10                # high (consolidation clearly visible)
+    #         test_data['sputum_neutrophil_percent'][i] = np.random.beta(4, 1) * 20 + 80  # very high (acute bacterial infection)
+    #         test_data['wbc_count'][i] = np.random.beta(3, 2) * 13000 + 12000            # very high (fighting acute infection)
+            
+    #     elif disease == 'Gastritis':
+    #         test_data['endoscopy_score'][i] = np.random.beta(4, 1) * 10                                 # high inflammation visible
+    #         test_data['h_pylori_level'][i] = np.random.choice([0, 1, 2, 3], p=[0.3, 0.25, 0.25, 0.2])   # 30% negative (0), 25% mild (1), 25% moderate (2), 20% heavy (3)
+    #         test_data['hemoglobin'][i] = np.random.beta(2, 3) * 6 + 10                                  # normal to slightly low 
+    #         test_data['gastric_ph'][i] = np.random.beta(2, 2) * 6 + 1                                   # variable
+            
+    #     elif disease == 'Gastric_cancer':
+    #         test_data['endoscopy_score'][i] = np.random.beta(4, 1) * 10                                 # very high, tumor visible
+    #         test_data['h_pylori_level'][i] = np.random.choice([0, 1, 2, 3], p=[0.4, 0.2, 0.2, 0.2])     # 40% negative (0), 20% each for 1,2,3
+    #         test_data['hemoglobin'][i] = np.random.beta(1, 3) * 7 + 5                                   # low (bleeding from tumor)
+    #         test_data['gastric_ph'][i] = np.random.beta(1, 3) * 7 + 1                                   # variable to high (loss of acid production)
+            
+    #     elif disease == 'Peptic_ulcers':
+    #         test_data['endoscopy_score'][i] = np.random.beta(4, 1) * 10                                 # high (ulcers visible)
+    #         test_data['h_pylori_level'][i] = np.random.choice([0, 1, 2, 3], p=[0.2, 0.2, 0.3, 0.3])     # 20% negative (0), 20% mild (1), 30% moderate (2), 30% heavy (3) 
+    #         test_data['hemoglobin'][i] = np.random.beta(2, 3) * 8 + 8                                   # variable (depends on bleeding)
+    #         test_data['gastric_ph'][i] = np.random.beta(1, 3) * 7 + 1                                   # low (acidic environment)
+    
