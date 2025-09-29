@@ -20,6 +20,25 @@ def generate_generic_symptoms(n_samples, diseases, disease_labels):
             symptoms[i, 3] = np.random.beta(1, 4) * 10          # abdominal_pain_severity (low)
             symptoms[i, 4] = np.random.beta(2.5, 2) * 10        # fatigue_level
             symptoms[i, 5] = np.random.beta(1, 3) * 10          # nausea (low)
+
+            # RELEVANT symptoms for lung diseases (low missingness - human error/oversight)
+            if np.random.random() < 0.05:   # 5% chance - data entry error
+                symptoms[i, 0] = np.nan     # fever not recorded
+            if np.random.random() < 0.02:   # 2% chance - rare oversight
+                symptoms[i, 1] = np.nan     # cough not recorded (main symptom!)
+            if np.random.random() < 0.06:   # 6% chance
+                symptoms[i, 2] = np.nan     # chest_pain not recorded
+
+            # LESS RELEVANT symptoms for lung diseases (higher missingness)
+            if np.random.random() < 0.25:  # 25% chance - often not asked
+                symptoms[i, 3] = np.nan  # abdominal_pain not recorded
+            if np.random.random() < 0.20:  # 20% chance - often not asked
+                symptoms[i, 5] = np.nan  # nausea not recorded
+            
+            # GENERAL symptom (moderate missingness across all diseases)
+            if np.random.random() < 0.12:  # 12% chance - often forgotten
+                symptoms[i, 4] = np.nan  # fatigue not recorded
+
         else: # stomach diseases
             # Stomach diseases: moderate fever, low cough, high abdominal pain, nausea
             symptoms[i, 0] = np.random.beta(2, 3) * 10          # fever_severity (lower)
@@ -28,7 +47,25 @@ def generate_generic_symptoms(n_samples, diseases, disease_labels):
             symptoms[i, 3] = np.random.beta(4, 1.5) * 10        # abdominal_pain_severity
             symptoms[i, 4] = np.random.beta(2.5, 2) * 10        # fatigue_level
             symptoms[i, 5] = np.random.beta(3, 2) * 10          # nausea
-    
+
+            # RELEVANT symptoms for stomach diseases (low missingness - human error/oversight)
+            if np.random.random() < 0.02:   # 2% chance - rare oversight
+                symptoms[i, 3] = np.nan     # abdominal_pain not recorded (main symptom!)
+            if np.random.random() < 0.04:   # 4% chance - data entry error
+                symptoms[i, 5] = np.nan     # nausea not recorded (common symptom)
+            if np.random.random() < 0.06:   # 6% chance
+                symptoms[i, 0] = np.nan     # fever not recorded
+
+            # LESS RELEVANT symptoms for stomach diseases (higher missingness)
+            if np.random.random() < 0.20:   # 20% chance - often not asked
+                symptoms[i, 1] = np.nan     # cough not recorded
+            if np.random.random() < 0.25:   # 25% chance - often not asked
+                symptoms[i, 2] = np.nan     # chest_pain not recorded
+            
+            # GENERAL symptom (moderate missingness across all diseases)
+            if np.random.random() < 0.12:   # 12% chance - often forgotten
+                symptoms[i, 4] = np.nan     # fatigue not recorded
+        
     # Add some noise and overlap between groups
     noise = np.random.normal(0, 0.5, symptoms.shape)
     symptoms += noise
@@ -168,4 +205,3 @@ if __name__ == "__main__":
     
     print("\nMissing data summary:")
     print(df.isnull().sum().sort_values(ascending=False))
-
