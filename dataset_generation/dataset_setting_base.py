@@ -333,7 +333,7 @@ def generate_diagnostic_tests(disease_labels):
                         
                     elif type(range_low) is float:
                         test_data[test_name][i] = random.uniform(range_low, range_high)
-                        
+
                     else:
                         raise ValueError("Unexpected type: " + str(type(range_low)) + " for value " + str(range_low))
                     
@@ -376,81 +376,14 @@ def generate_patient_data():
     return df
 
 
-
-
-
-
-# def generate_diagnostic_tests(disease_labels):
-#     """Generate disease-specific diagnostic test results"""
-
-#     # Initialize all test columns with NaN
-#     test_data = {}
-
-#     # To generate columns with test names and initialize them with NANs
-#     for test_name in TESTS_NAMES:
-#         test_data[test_name] = np.full(n_samples, np.nan)
-
-#     for i, disease in enumerate(disease_labels):
-#         for test_name in TESTS[disease]["tests"]:
-#             gen_prob = np.random.random_integers(low=0, high=100)
-
-#             for (disease_prob, range_low, range_high) in TESTS[disease]["tests"][test_name]:
-#                 if gen_prob <= disease_prob:
-#                     # hai generato il range disease_range
-#                     test_result = np.random.random_integers(low=range_low, high=range_high)
-#                     test_data[test_name][i] = test_result
-#                     break
-                    
-#                 gen_prob -= disease_prob
-
-
-
-
-
-
-
 if __name__ == "__main__":
 
-
-
-    # # Definition of diseases and their group
-    # diseases = {
-    #         'Bronchitis': {'group': 'Lung', 'id': 0},
-    #         'Copd': {'group': 'Lung', 'id': 1}, 
-    #         'Pneumonia': {'group': 'Lung', 'id': 2},
-    #         'Gastritis': {'group': 'Stomach', 'id': 3},
-    #         'Gastric_cancer': {'group': 'Stomach', 'id': 4},
-    #         'Peptic_ulcers': {'group': 'Stomach', 'id': 5}
-    #     }
-
-    # # Definition of all possible tests
-    # tests = [
-
-    #     # Lung tests
-    #     'pulmonary_function',           # FEV1% predicted (0-100%)
-    #     'chest_xray_score',             # Chest X-ray score (0-10)
-    #     'sputum_neutrophil_percent',    # Sputum neutrophil % (0-100%)
-    #     'wbc_count',                    # White blood cell count (3,000-25,000 cells/µL)
-        
-    #     # Stomach tests
-    #     'endoscopy_score',              # Endoscopy score (0-10)
-    #     'h_pylori_level',               # H. pylori level (0-3 categorical)
-    #     'hemoglobin',                   # Hemoglobin (5-18 g/dL)
-    #     'gastric_ph'                    # Gastric pH (1-8)
-    # ]
-
-    
-
-    
     # Set seed for reproducibility
     np.random.seed(42)
-    
 
     # Generate dataset
     df = generate_patient_data()
-
     df.to_csv('synthetic_patient_setting_base_new.csv', index=False)
-    
     
     # Display basic info
     print("\nDataset shape:", df.shape)
@@ -462,45 +395,3 @@ if __name__ == "__main__":
     
     print("\nMissing data summary:")
     print(df.isnull().sum().sort_values(ascending=False))
-
-
-
-
-    # # Generate test values based on disease
-    # for i, disease in enumerate(disease_labels):
-    #     if disease == 'Bronchitis':
-    #         test_data['pulmonary_function'][i] = np.random.beta(2, 3) * 100             # moderately reduced function
-    #         test_data['chest_xray_score'][i] = np.random.beta(3, 2) * 10                # mild to moderate inflammation
-    #         test_data['sputum_neutrophil_percent'][i] = np.random.beta(4, 1) * 100      # high inflammation (range 0-100)
-    #         test_data['wbc_count'][i] = np.random.beta(2, 3) * 10000 + 8000             # elevated fighting infection
-            
-    #     elif disease == 'Copd':
-    #         test_data['pulmonary_function'][i] = np.random.beta(1, 4) * 100             # severely reduced
-    #         test_data['chest_xray_score'][i] = np.random.beta(4, 1) * 10                # clear abnormalities 
-    #         test_data['sputum_neutrophil_percent'][i] = np.random.beta(2, 2) * 60 + 20  # variable
-    #         test_data['wbc_count'][i] = np.random.beta(2, 2) * 16000 + 4000             # variable
-            
-    #     elif disease == 'Pneumonia':
-    #         test_data['pulmonary_function'][i] = np.random.beta(3, 2) * 30 + 60         # mildly reduced
-    #         test_data['chest_xray_score'][i] = np.random.beta(4, 1) * 10                # high (consolidation clearly visible)
-    #         test_data['sputum_neutrophil_percent'][i] = np.random.beta(4, 1) * 20 + 80  # very high (acute bacterial infection)
-    #         test_data['wbc_count'][i] = np.random.beta(3, 2) * 13000 + 12000            # very high (fighting acute infection)
-            
-    #     elif disease == 'Gastritis':
-    #         test_data['endoscopy_score'][i] = np.random.beta(4, 1) * 10                                 # high inflammation visible
-    #         test_data['h_pylori_level'][i] = np.random.choice([0, 1, 2, 3], p=[0.3, 0.25, 0.25, 0.2])   # 30% negative (0), 25% mild (1), 25% moderate (2), 20% heavy (3)
-    #         test_data['hemoglobin'][i] = np.random.beta(2, 3) * 6 + 10                                  # normal to slightly low 
-    #         test_data['gastric_ph'][i] = np.random.beta(2, 2) * 6 + 1                                   # variable
-            
-    #     elif disease == 'Gastric_cancer':
-    #         test_data['endoscopy_score'][i] = np.random.beta(4, 1) * 10                                 # very high, tumor visible
-    #         test_data['h_pylori_level'][i] = np.random.choice([0, 1, 2, 3], p=[0.4, 0.2, 0.2, 0.2])     # 40% negative (0), 20% each for 1,2,3
-    #         test_data['hemoglobin'][i] = np.random.beta(1, 3) * 7 + 5                                   # low (bleeding from tumor)
-    #         test_data['gastric_ph'][i] = np.random.beta(1, 3) * 7 + 1                                   # variable to high (loss of acid production)
-            
-    #     elif disease == 'Peptic_ulcers':
-    #         test_data['endoscopy_score'][i] = np.random.beta(4, 1) * 10                                 # high (ulcers visible)
-    #         test_data['h_pylori_level'][i] = np.random.choice([0, 1, 2, 3], p=[0.2, 0.2, 0.3, 0.3])     # 20% negative (0), 20% mild (1), 30% moderate (2), 30% heavy (3) 
-    #         test_data['hemoglobin'][i] = np.random.beta(2, 3) * 8 + 8                                   # variable (depends on bleeding)
-    #         test_data['gastric_ph'][i] = np.random.beta(1, 3) * 7 + 1                                   # low (acidic environment)
-    
