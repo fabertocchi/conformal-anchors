@@ -6,7 +6,7 @@ import random
 # Number of patients
 N_SAMPLES = 1000
 
-# Dictonary with, for each disease and for each test used for that disease, tuples of (probability, lower extreme of range, upper extreme of range)
+# Dictonary with, for each disease and for each test used for that disease, tuples of (probability of range, lower extreme of range, upper extreme of range)
 TESTS = {
     'Bronchitis': {
         'group': 'Lung', 
@@ -37,7 +37,7 @@ TESTS = {
             'wbc_count': [
                 (0.10, 3000, 6000),
                 (0.35, 6001, 9000),
-                (0.38, 9001, 12000),
+                (0.30, 9001, 12000),
                 (0.18, 12001, 16000),
                 (0.05, 16001, 20000),
                 (0.02, 20001, 25000)
@@ -135,7 +135,7 @@ TESTS = {
                 (0.45, 3, 3)
             ],
             'hemoglobin': [
-                (0.01, 0, 8),
+                (0.01, 5, 8),
                 (0.03, 8.1, 10),
                 (0.12, 10.1, 12),
                 (0.40, 12.1, 14),
@@ -170,7 +170,7 @@ TESTS = {
                 (0.20, 3, 3)
             ],
             'hemoglobin': [
-                (0.05, 0, 8),
+                (0.05, 5, 8),
                 (0.10, 8.1, 10),
                 (0.25, 10.1, 12),
                 (0.35, 12.1, 14),
@@ -205,7 +205,7 @@ TESTS = {
                 (0.40, 3, 3)
             ],
             'hemoglobin': [
-                (0.08, 0, 8),
+                (0.08, 5, 8),
                 (0.15, 8.1, 10),
                 (0.25, 10.1, 12),
                 (0.30, 12.1, 14),
@@ -237,6 +237,11 @@ TESTS_NAMES = list(set([test for disease_name in TESTS.keys() for test in TESTS[
 # List of probabilities of each disease (uniform probability case)
 DISEASE_PROBS = [1 / N_DISEASES] * N_DISEASES
 
+# Define generic symptoms
+SYMPTOMS_NAMES = ['fever_severity', 'cough_severity', 'chest_pain_severity', 'abdominal_pain_severity', 'fatigue_level', 'nausea']
+
+# Extract number of symptoms
+N_SYMPTOMS = len(SYMPTOMS_NAMES)
 
 def generate_disease_labels():
     """Generate disease labels with UNIFORM distribution"""
@@ -246,7 +251,7 @@ def generate_disease_labels():
 def generate_generic_symptoms(disease_labels):
     """Generate generic symptoms based on disease patterns"""
 
-    symptoms = np.zeros((N_SAMPLES, N_DISEASES))
+    symptoms = np.zeros((N_SAMPLES, N_SYMPTOMS))
 
     for i, disease in enumerate(disease_labels):
         if TESTS[disease]['group'] == "Lung":
@@ -259,22 +264,22 @@ def generate_generic_symptoms(disease_labels):
             symptoms[i, 5] = np.random.beta(1, 3) * 10          # nausea (low)
 
             # RELEVANT symptoms for lung diseases (low missingness - human error/oversight)
-            if np.random.random() < 0.05:   # 5% chance - data entry error
+            if np.random.random() < 0.02:   # 5% chance - data entry error
                 symptoms[i, 0] = np.nan     # fever not recorded
-            if np.random.random() < 0.02:   # 2% chance - rare oversight
+            if np.random.random() < 0.005:  # 2% chance - rare oversight
                 symptoms[i, 1] = np.nan     # cough not recorded (main symptom!)
-            if np.random.random() < 0.06:   # 6% chance
+            if np.random.random() < 0.03:   # 6% chance
                 symptoms[i, 2] = np.nan     # chest_pain not recorded
 
             # LESS RELEVANT symptoms for lung diseases (higher missingness)
-            if np.random.random() < 0.25:  # 25% chance - often not asked
-                symptoms[i, 3] = np.nan  # abdominal_pain not recorded
-            if np.random.random() < 0.20:  # 20% chance - often not asked
-                symptoms[i, 5] = np.nan  # nausea not recorded
+            if np.random.random() < 0.20:   # 25% chance - often not asked
+                symptoms[i, 3] = np.nan     # abdominal_pain not recorded
+            if np.random.random() < 0.15:   # 20% chance - often not asked
+                symptoms[i, 5] = np.nan     # nausea not recorded
             
             # GENERAL symptom (moderate missingness across all diseases)
-            if np.random.random() < 0.12:  # 12% chance - often forgotten
-                symptoms[i, 4] = np.nan  # fatigue not recorded
+            if np.random.random() < 0.10:   # 12% chance - often forgotten
+                symptoms[i, 4] = np.nan     # fatigue not recorded
 
         else:
             # Stomach diseases: moderate fever, low cough, high abdominal pain, nausea
@@ -286,21 +291,21 @@ def generate_generic_symptoms(disease_labels):
             symptoms[i, 5] = np.random.beta(3, 2) * 10          # nausea
 
             # RELEVANT symptoms for stomach diseases (low missingness - human error/oversight)
-            if np.random.random() < 0.02:   # 2% chance - rare oversight
+            if np.random.random() < 0.005:  # 2% chance - rare oversight
                 symptoms[i, 3] = np.nan     # abdominal_pain not recorded (main symptom!)
-            if np.random.random() < 0.04:   # 4% chance - data entry error
+            if np.random.random() < 0.01:   # 4% chance - data entry error
                 symptoms[i, 5] = np.nan     # nausea not recorded (common symptom)
-            if np.random.random() < 0.06:   # 6% chance
+            if np.random.random() < 0.03:   # 6% chance
                 symptoms[i, 0] = np.nan     # fever not recorded
 
             # LESS RELEVANT symptoms for stomach diseases (higher missingness)
             if np.random.random() < 0.20:   # 20% chance - often not asked
                 symptoms[i, 1] = np.nan     # cough not recorded
-            if np.random.random() < 0.25:   # 25% chance - often not asked
+            if np.random.random() < 0.15:   # 25% chance - often not asked
                 symptoms[i, 2] = np.nan     # chest_pain not recorded
             
             # GENERAL symptom (moderate missingness across all diseases)
-            if np.random.random() < 0.12:   # 12% chance - often forgotten
+            if np.random.random() < 0.10:   # 12% chance - often forgotten
                 symptoms[i, 4] = np.nan     # fatigue not recorded
         
     # Add some noise and overlap between groups
@@ -380,6 +385,7 @@ if __name__ == "__main__":
 
     # Set seed for reproducibility
     np.random.seed(42)
+    random.seed(42)
 
     # Generate dataset
     df = generate_patient_data()
@@ -395,3 +401,11 @@ if __name__ == "__main__":
     
     print("\nMissing data summary:")
     print(df.isnull().sum().sort_values(ascending=False))
+
+    
+    missing_counts = (
+        df[SYMPTOMS_NAMES].isna()                # True where missing
+        .groupby(df["disease_group"])  # group by disease type
+        .sum()                 # sum True values (count missing)
+    )
+    print("\nNumber of missing generic symptoms for disease type:\n", missing_counts)
