@@ -272,6 +272,30 @@ ORDINAL_TESTS = {
     'h_pylori_level'
 }
 
+# Precompute test name sets by group (used to decide cross-group tests)
+LUNG_TESTS = sorted({t for d, info in TESTS.items() if info['group'] == 'Lung' for t in info['tests']})
+STOMACH_TESTS = sorted({t for d, info in TESTS.items() if info['group'] == 'Stomach' for t in info['tests']})
+
+# Definition of 'healthy' ranges for each test, used when injecting cross-group healthy tests
+HEALTHY_RANGES = {
+    'pulmonary_function': (85, 100),          
+    'sputum_neutrophil_percent': (10, 50),   
+    'wbc_count': (4500, 9000),                
+    'hemoglobin': (12.5, 16.5),               # sex-agnostic mid-normal range  
+    'gastric_ph': (1.5, 3.5),                     
+    'chest_xray_score': (0, 1),               # clear / minimal findings     
+    'endoscopy_score': (0, 1),                
+    'h_pylori_level': (0, 1),                 
+}
+
+# Probability that an out-of-group test (cross-test) will be ordered (intentionally very low to simulate rare, outlier cases)
+CROSS_TEST_PROB = 0.005
+
+# Dictionary to keep track of how many cross-tests were sampled and which patients received them
+sampled_cross_tests = {
+    'patient_id':[]
+    }
+
 def compute_disease_test_mean_variance(table):
     """
     Compute mixture mean and total variance for one (disease, test) table.
@@ -506,11 +530,36 @@ def generate_categorical_diagnostic_tests(table):
                 
     return value
 
+def sample_healthy_value(test_name):
+    """
+    Sample a 'healthy' value for a test from HEALTHY_RANGES.
+    - Continuous tests: uniform in [low, high]
+    - Ordinal tests: random integer in [low, high]
+
+    Parameters:
+        test_name: str
+            Name of the diagnostic test
+    
+    Returns:
+        value: float or int
+        Random healthy value consistent with test type
+    """
+    
+    low, high = HEALTHY_RANGES[test_name]
+    # Decide integer vs float by checking if both bounds are integers
+    if float(low).is_integer() and float(high).is_integer():
+        # Ordinal/integer sampling
+        return random.randint(int(low), int(high))
+    else:
+        # Continuous sampling
+        return random.uniform(low, high)
+
 def generate_diagnostic_tests_values(disease_labels):
     """
     Generate diagnostic test values for each patient given their disease.
     - Continuous tests -> truncated normal with disease-specific mean/var.
     - Ordinal tests -> categorical sampling from probability table.
+    With small probability, inject out-of-group tests (cross-tests): assign a healthy-range value.
 
     Parameters:
         disease_labels: array-like of shape (N_SAMPLES,)
@@ -550,6 +599,29 @@ def generate_diagnostic_tests_values(disease_labels):
 
             # Store sampled value for this patient and test
             test_data[test_name][i] = value
+
+        # Inject occasional cross-group 'healthy' tests (outliers)
+        if TEST_STATS[disease]['group'] == 'Lung':
+            # Candidate tests from the stomach group not yet filled
+            candidate_tests = [t for t in STOMACH_TESTS if np.isnan(test_data[t][i])]
+        else:
+            # Candidate tests from the lung group not yet filled
+            candidate_tests = [t for t in LUNG_TESTS if np.isnan(test_data[t][i])]
+
+        # With small probability, add one or more healthy-range tests
+        for tname in candidate_tests:
+            # With low probability, this out-of-group test was ordered
+            if random.random() <= CROSS_TEST_PROB:
+                healthy_val = sample_healthy_value(tname)
+                test_data[tname][i] = healthy_val  # fill formerly NaN with healthy reading
+
+                # Track how many times this test was injected
+                if tname in sampled_cross_tests:
+                    sampled_cross_tests[tname] += 1
+                else:
+                    sampled_cross_tests[tname] = 1
+
+                sampled_cross_tests['patient_id'].append(i+1)  # store patient_id (1-indexed)
 
     return test_data
 
@@ -620,10 +692,18 @@ if __name__ == "__main__":
     print("\nMissing data summary:")
     print(df.isnull().sum().sort_values(ascending=False))
 
-    
+    # Display missing counts
     missing_counts = (
         df[SYMPTOMS_NAMES].isna()                # True where missing
         .groupby(df["disease_group"])            # group by disease type
         .sum()                 
     )
     print("\nNumber of missing generic symptoms for disease type:\n", missing_counts)
+
+    # Display cross-tests
+    for key, value in sampled_cross_tests.items():
+        print(f"{key}: {value}")
+
+    print("Number of patients with at least 1 cross-tests:", len(sampled_cross_tests['patient_id']))
+    print("Number of patients with exactly 1 cross-test:", len(set(sampled_cross_tests['patient_id'])))
+    print("Number of patients with more that 1 cross-tests:", len(sampled_cross_tests['patient_id']) - len(set(sampled_cross_tests['patient_id'])))
