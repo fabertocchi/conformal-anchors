@@ -5,10 +5,10 @@ import math
 from scipy.stats import truncnorm
 
 # Choose the version of data for the tests to consider (data.tests_v1 or data.tests_v2)
-from data.tests_v1 import TESTS
+from data.tests_v2 import TESTS
 
 # Number of patients
-N_SAMPLES = 1000
+N_SAMPLES = 100000
 
 # List of disease names
 DISEASE_NAMES = list(TESTS.keys())
@@ -20,7 +20,7 @@ N_DISEASES = len(DISEASE_NAMES)
 DISEASE_PROBS = [1 / N_DISEASES] * N_DISEASES
 
 # List of test names
-TESTS_NAMES = list(set([test for disease_name in TESTS.keys() for test in TESTS[disease_name]['tests']]))
+TESTS_NAMES = list(sorted(set([test for disease_name in TESTS.keys() for test in TESTS[disease_name]['tests']])))
 
 # Definition of generic symptom features
 SYMPTOMS_NAMES = [
@@ -460,12 +460,12 @@ if __name__ == "__main__":
     # Generate dataset: Uncomment one of the following lines to choose version
 
     # Version 1: using TESTS from tests_v1
-    df = generate_patient_data()
-    df.to_csv('synthetic_patient_basic_setting_v1.csv', index=False)
+    # df = generate_patient_data()
+    # df.to_csv('synthetic_patient_basic_setting_v1.csv', index=False)
 
     # Version 2: using TESTS from tests_v2
-    # df = generate_patient_data()
-    # df.to_csv('synthetic_patient_basic_setting_v2.csv', index=False)
+    df = generate_patient_data()
+    df.to_csv('synthetic_patient_basic_setting_v2.csv', index=False)
     
     # Display basic info
     print("\nDataset shape:", df.shape)
