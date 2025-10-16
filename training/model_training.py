@@ -39,13 +39,16 @@ param_dict_xgb = {
     'num_class': len(np.unique(y)),
     'eval_metric': 'mlogloss',
     'n_estimators': 200,
-    'min_child_weight': 5,
-    'reg_alpha': 0.1,
+    'min_child_weight': 6,
+    'reg_alpha': 0.3,
     'reg_lambda': 0.1,
-    'learning_rate': 0.05,
+    'learning_rate': 0.03,
     'max_depth': 5,
     'tree_method': 'hist',
-    'random_state': 42
+    'random_state': 42,
+    'subsample': 0.7,
+    'colsample_bytree': 0.8,
+    'gamma': 0.2
 }
 
 # Define parameters for RandomForestClassifier model
@@ -108,13 +111,16 @@ def train_xgbclassifier(param_dict, X_train, y_train, X_test, y_test):
         max_depth=param_dict['max_depth'],
         tree_method=param_dict['tree_method'],
         random_state=param_dict['random_state'],
+        subsample=param_dict['subsample'],
+        colsample_bytree=param_dict['colsample_bytree'],
+        gamma=param_dict['gamma']                           # Minimum loss reduction to make a further partition
     )
 
     # Fit the model to the training data, monitoring performance on the test set 
     xgb_cl.fit(
         X_train, y_train,
         eval_set=[(X_test, y_test)],                       # Validation data for evaluation metric
-        verbose=False
+        verbose=False,
     )
 
     # Predict class probabilities for the test set
