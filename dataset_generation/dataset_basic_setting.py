@@ -115,7 +115,7 @@ def compute_disease_test_mean_variance(table):
     # - between: variance of the band means relative to overall mean
     within = sum(prob * s2 for prob, s2 in band_vars)
     between = sum(prob * (mid_point - mean) ** 2 for prob, mid_point in band_means)
-    var = within + between
+    var = (within + between) * 0.8              # deflate variance slightly to avoid excessive overlap between diseases
 
     return mean, var
 
