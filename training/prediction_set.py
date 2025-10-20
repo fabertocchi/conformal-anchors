@@ -10,7 +10,7 @@ xgb_cl, _, _ = train_xgbclassifier(param_dict_xgb, X_train, y_train, X_test, y_t
 n = y_conf_pred.shape[0]
 
 # Desired miscoverage level (α = 0.05 → 95% confidence level)
-alpha = 0.05
+alpha = 0.01
 
 # Get class names
 class_names = xgb_cl.classes_
@@ -96,14 +96,14 @@ if __name__ == "__main__":
     # (1) Compute scores on holdout data: show one calibration sample's softmax and 1 - s_i line
     ax = axes[0]
     bars = ax.bar(np.arange(len(class_names)), cal_softmax[i_cal], color="lightgray", edgecolor="k", linewidth=0.5)
-    bars[y_conf_pred.iloc[i_cal]].set_color("gray")  # highlight true class bar
-    ax.axhline(1 - cal_scores[i_cal], color="seagreen", linestyle="--", linewidth=2)  # equals p_true for this sample
+    bars[y_conf_pred.iloc[i_cal]].set_color("gray")                                   # highlight true class bar
+    ax.axhline(1 - cal_scores[i_cal], color="seagreen", linestyle="--", linewidth=2)  # add horizontal line at 1 - s_i
     ax.set_title("(1) compute scores on holdout data")
     ax.set_xlabel("class")
     ax.set_ylabel("softmax output")
     ax.set_xticks(np.arange(len(class_names)))
 
-    # (2) Get quantile: histogram of scores with qhat
+    # (2) Get quantile: histogram of scores with quantile threshold qhat
     ax = axes[1]
     ax.hist(cal_scores, bins=30, color="darkseagreen", alpha=0.9, edgecolor="white")
     ax.axvline(qhat, color="lightcoral", linestyle="--", linewidth=2)
