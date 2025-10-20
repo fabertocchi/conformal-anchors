@@ -9,11 +9,11 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import learning_curve
 
 # Upload the two versions of the dataset
-# df_v1 = pd.read_csv("./synthetic_patient_basic_setting_v1.csv")
-# df_v2 = pd.read_csv("./synthetic_patient_basic_setting_v2.csv")
+# df_v1 = pd.read_csv("generated_datasets/synthetic_patient_basic_setting_v1.csv")
+# df_v2 = pd.read_csv("generated_datasets/synthetic_patient_basic_setting_v2.csv")
 
 # Upload the binned version of the dataset
-df_v2 = pd.read_csv("./synthetic_patient_basic_setting_v2_binned.csv")
+df_v2 = pd.read_csv("generated_datasets/synthetic_patient_basic_setting_v2_binned.csv")
 
 # Define X and y
 y = df_v2['disease']
@@ -279,6 +279,9 @@ if __name__ == '__main__':
     
     # Train the model
     xgb_cl, proba_xgb, preds_xgb = train_xgbclassifier(param_dict_xgb, X_train, y_train, X_test, y_test)
+
+    # Save the model
+    xgb_cl.save_model("xgb_model.json")
 
     # Evaluate the model
     print("Accuracy of XGBoost:", accuracy_score(y_test, preds_xgb))
