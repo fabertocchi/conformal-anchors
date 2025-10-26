@@ -6,113 +6,154 @@ import xgboost as xgb
 from sklearn.metrics import accuracy_score, classification_report
 from prediction_set import qhat
 
-"""Version with +-1 tolerance when checking for similar instances in anchors"""
+"""Use k-NN with Gower similarity to select similar instances in anchor set for each test sample."""
 
-# lens = []
-# for test_idx in range(len(X_test)):
-#     test_instance_symptoms = X_test.iloc[test_idx][SYMPTOMS_NAMES]
-#     #print("Test instance symptoms:\n", test_instance_symptoms)
-#     valid_symptoms = test_instance_symptoms.index[test_instance_symptoms.notna()]
-
-#     # Compare only on those valid symptom columns
-#     # mask = (X_anchors[valid_symptoms] == test_instance_symptoms[valid_symptoms].values).all(axis=1)
-#     X_valid = X_anchors[valid_symptoms]
-#     diff = np.abs(X_valid - test_instance_symptoms[valid_symptoms].values)
-#     mask = (diff <= 1).all(axis=1)
-
-#     # Create subset
-#     subset_df = X_anchors[mask].reset_index(drop=True)
-#     lens.append(len(subset_df))
-#     print(len(subset_df))
-
-# print("Average subset size:", np.mean(lens))
-# print(subset_df)
-# print(len(subset_df), "instances in the subset matching the test instance symptoms.")
-
-"""Version with k-nn to choose similar instances in anchors"""
-
-k = 25              # Number of nearest neighbors
-all_subsets = []    # Store all subsets
-y_subsets = []
-
-for test_idx in range(len(X_test)):
-    test_instance_symptoms = X_test.iloc[test_idx][SYMPTOMS_NAMES]                  # Extracts row of test_idx and selects only columns in SYMPTOMS_NAMES
-    # print("Test instance symptoms:\n", test_instance_symptoms)
-    valid_symptoms = test_instance_symptoms.index[test_instance_symptoms.notna()]   # Keep only non-NaN symptoms
-    # print("Valid symptoms:", valid_symptoms)
+def gower_similarity(anchor_vectors, test_vector, feature_range = (0, 10)):
+    """
+    Compute Gower similarity between each row of anchor instance and a single test instance.
+    It measures how close two samples are, returning values in [0, 1], where 1 means identical and 0 means maximally different.
     
-    # Get bin values for valid symptoms of test instance
-    test_vector = test_instance_symptoms[valid_symptoms].values         # it is of shape (num_valid_symptoms,)
-    # print("Test vector:", test_vector)
-    # print("test_vector shape", test_vector.shape)                      
+    Args:
+        anchor_vectors (np.ndarray): 2D array of shape (n_anchors, n_features).
+        test_vector (np.ndarray): 1D array of shape (n_features,).
+        feature_range (tuple): (min, max) range of possible feature values.
 
-    # Get bin values for valid symptoms of all anchor instances
-    anchor_vectors = X_anchors[valid_symptoms].values                   # it is of shape (num_anchors, num_valid_symptoms)
-    # print("anchor_vectors", anchor_vectors[:5])
+    Returns:
+        similarities (np.ndarray): Similarities between test_vector and each anchor (values in [0, 1]).
+    """
+    min_val, max_val = feature_range
+    # Compute feature range width
+    R = max_val - min_val
 
-    # Calculate all distances at once using broadcasting (vectorized row-wise subtraction)
-    # Squared differences (Euclidean distance squared)
-    distances = np.sum((anchor_vectors - test_vector) ** 2, axis=1)     # axis=1 to sum across each row
-    # print("difference shape", (anchor_vectors-test_vector).shape)
-    # print("Distances\n", distances)
-    # print("distances shape", distances.shape)                           # it is of shape (num_anchors,)
+    # Compute absolute feature-wise differences using broadcasting
+    # (as if you had n_anchors copies of test_vector stacked vertically and performs element-wise subtraction)
+    diff = np.abs(anchor_vectors - test_vector)
 
-    # Alternative: Cosine similarity (vectorized) -> problem with NaN values
-    # norms_anchors = np.linalg.norm(anchor_vectors, axis=1)
-    # norm_test = np.linalg.norm(test_vector)
-    # distances = 1 - np.dot(anchor_vectors, test_vector) / (norms_anchors * norm_test)
+    # Create mask for valid differences (not NaN) -> it ensures that only valid features contribute to the similarity
+    valid_mask = ~np.isnan(diff)
+    
+    # Compute Gower distance per anchor instance and convert to similarity
+    distances = np.sum(diff / R * valid_mask, axis=1) / np.sum(valid_mask, axis=1)      # True acts as 1, False as 0 → effectively counts valid features only
+    similarities = 1 - distances
+    
+    return similarities
 
-    # Get indices of k nearest neighbors
-    k_nearest_indices = np.argsort(distances)[:k]
-    # print("Indices of k nearest neighbors:", k_nearest_indices)
+def get_knn_subsets(X_test, X_anchors, y_anchors, k=25):
+    """
+    For each test instance, find the k most similar anchor instances using Gower similarity.
 
-    # Create subset with k nearest neighbors and corresponding labels
-    subset_df = X_anchors.iloc[k_nearest_indices].reset_index(drop=True)
-    y_subset_df = y_anchors.iloc[k_nearest_indices].reset_index(drop=True)
+    Args:
+        X_test (pd.DataFrame): Test set (n_test, n_features).
+        X_anchors (pd.DataFrame): Anchor pool (n_anchors, n_features).
+        y_anchors (pd.Series): Labels corresponding to anchor instances.
+        k (int): Number of nearest neighbors to select for each test instance.
 
-    all_subsets.append(subset_df)                                           # Save the subset
-    y_subsets.append(y_subset_df)                                           # Save corresponding labels
+    Returns:
+        all_subsets (list[pd.DataFrames]): List of DataFrames containing the k nearest anchors per test instance.
+        y_subsets(list[pd.Series]): List of label Series corresponding to each subset.
+        similarities_list (list[np.ndarray]): List of similarity scores for the selected k anchors.
+    """
+    all_subsets, y_subsets, similarities_list = [], [], []
 
-# Access any subset: all_subsets[test_idx] gives you the subset for that test instance
-# Example: subset for first test instance
-# print(X_test.iloc[0])
-# print("\nSubset for first test instance:")
-# print(all_subsets[0])
+    for test_idx in range(len(X_test)):
+        # Select the current test instance and retain only valid (non-NaN) features
+        test_instance = X_test.iloc[test_idx][SYMPTOMS_NAMES]                       
+        valid_symptoms = test_instance.index[test_instance.notna()]                 
 
-# Compute accuracy of trained XGBoost model on each subset
-xgb_cl = xgb.XGBClassifier()
-xgb_cl.load_model("xgb_model.json")
+        # Extract the valid features from both test and anchor sets
+        test_vector = test_instance[valid_symptoms].values                          # It is of shape (num_valid_symptoms,)
+        anchor_vectors = X_anchors[valid_symptoms].values                           # It is of shape (num_anchors, num_valid_symptoms)
 
-y_preds_subsets = []
-accuracies = []
+        # Compute Gower similarities between the test instance and all anchors
+        similarities = gower_similarity(anchor_vectors, test_vector, (0, 10))
 
-for subset_df, y_subset_df in list(zip(all_subsets, y_subsets)):
-    preds = xgb_cl.predict(subset_df)
-    y_preds_subsets.append(preds)
-    accuracies.append(accuracy_score(y_subset_df, preds))
-    # print("Accuracy of XGBoost:", accuracy_score(y_subset_df, preds))
+        # Identify indices of the k most similar anchors (sorted descending by similarity)
+        k_nearest_indices = np.argsort(-similarities)[:k]  
 
-print("Average accuracy across all subsets:", np.mean(accuracies))
-print("-"*80)
+        # Retrieve the corresponding feature rows and labels
+        subset_df = X_anchors.iloc[k_nearest_indices].reset_index(drop=True)
+        y_subset_df = y_anchors.iloc[k_nearest_indices].reset_index(drop=True)
 
+        # Store subsets and similarities for this test instance
+        all_subsets.append(subset_df)                                               # Save the subset
+        y_subsets.append(y_subset_df)                                               # Save corresponding labels
+        similarities_list.append(similarities[k_nearest_indices])
 
-# Construct prediction set for a specific test instance
-test_idx = 2
+    return all_subsets, y_subsets, similarities_list
 
-# Compute softmax probabilities for the subset corresponding to the test instance
-test_softmax = xgb_cl.predict_proba(all_subsets[test_idx]) 
-# Construct prediction sets for instances in the subset corresponding to the test instance
-prediction_sets = test_softmax >= (1 - qhat) 
+def compute_subset_accuracies(model, all_subsets, y_subsets):
+    """
+    Evaluate model accuracy on each subset of k nearest anchor instances.
 
-print("Shape of prediction sets", prediction_sets.shape)                                    # it is of shape (num_instances_in_subset, num_classes)
+    Args:
+        model: Trained classifier implementing predict().
+        all_subsets (list[pd.DataFrame]): List of anchor subsets per test instance.
+        y_subsets (list[pd.Series]): True labels corresponding to each subset.
 
-# Display the prediction sets along with true labels
-class_names = xgb_cl.classes_
-print(class_names)
-print(type(class_names))
-for i in range(len(prediction_sets)):
-        # Get the classes in this prediction set
+    Returns:
+        accuracies (list): Model accuracy for each subset.
+        y_preds_subsets (list): Model predictions for each subset.
+    """
+    accuracies, y_preds_subsets = [], []
+
+    for subset_df, y_subset_df in zip(all_subsets, y_subsets):
+        preds = model.predict(subset_df)
+        y_preds_subsets.append(preds)
+        accuracies.append(accuracy_score(y_subset_df, preds))
+
+    return accuracies, y_preds_subsets
+
+def construct_prediction_sets(model, subset_df, qhat):
+    """
+    Construct prediction sets for a given subset using softmax probabilities.
+    The prediction set for each sample includes all classes with predicted probability ≥ (1 - qhat).
+
+    Args:
+        model: Trained probabilistic classifier implementing predict_proba().
+        subset_df (pd.DataFrame): Feature subset for which to compute prediction sets.
+        qhat (float): Conformal calibration threshold (controls prediction set size).
+
+    Returns:
+        prediction_sets: Boolean array (n_samples, n_classes), 
+                         where True indicates class inclusion in the prediction set.
+    """
+
+    # Compute softmax probabilities for the given subset
+    softmax_probs = model.predict_proba(subset_df)
+    # Construct prediction sets for instances in the given subset
+    prediction_sets = softmax_probs >= (1 - qhat)
+    
+    return prediction_sets
+
+if __name__ == "__main__":
+    
+    k = 25              # Number of nearest neighbors
+
+    # Compute k-nearest subsets for each test instance
+    all_subsets, y_subsets, similarities_list = get_knn_subsets(X_test, X_anchors, y_anchors, k=k)
+
+    # Load trained XGBoost model
+    xgb_cl = xgb.XGBClassifier()
+    xgb_cl.load_model("xgb_model.json")
+
+    # Compute model accuracy on each subset
+    accuracies, y_preds_subsets = compute_subset_accuracies(xgb_cl, all_subsets, y_subsets)
+    print("Average accuracy across all subsets:", np.mean(accuracies), "\n")
+
+    # Example: inspect first test instance
+    test_idx = 0
+    print("Test instance:\n", X_test.iloc[test_idx])
+    print("\nSubset test instance", test_idx, ":\n")
+    print(all_subsets[test_idx])
+    print("Similarities:\n", similarities_list[test_idx])
+
+    # Construct and visualize prediction sets for first test instance
+    prediction_sets = construct_prediction_sets(xgb_cl, all_subsets[test_idx], qhat)
+    print("Shape of prediction sets:", prediction_sets.shape)
+
+    # Display classes included in each prediction set vs. true labels
+    class_names = xgb_cl.classes_
+    for i in range(len(prediction_sets)):
         classes_in_set = class_names[prediction_sets[i]]
-        print(f"Sample {i}: {list(classes_in_set)}")
-        print(f"Sample {i} true class: {y_subsets[test_idx][i]}")
-
+        print(f"Sample {i}: Prediction set: {list(classes_in_set)}")
+        print(f"Sample {i}: True class: {y_subsets[test_idx][i]}")
