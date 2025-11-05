@@ -3,8 +3,8 @@ from dataset_basic_setting import SYMPTOMS_NAMES
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.metrics import accuracy_score, classification_report
-from prediction_set import qhat
+from sklearn.metrics import accuracy_score
+from prediction_set import compute_conformal_threshold, construct_prediction_sets
 
 """Use k-NN with Gower similarity to select similar instances in anchor set for each test sample."""
 
@@ -103,27 +103,6 @@ def compute_subset_accuracies(model, all_subsets, y_subsets):
 
     return accuracies, y_preds_subsets
 
-def construct_prediction_sets(model, subset_df, qhat):
-    """
-    Construct prediction sets for a given subset using softmax probabilities.
-    The prediction set for each sample includes all classes with predicted probability ≥ (1 - qhat).
-
-    Args:
-        model: Trained probabilistic classifier implementing predict_proba().
-        subset_df (pd.DataFrame): Feature subset for which to compute prediction sets.
-        qhat (float): Conformal calibration threshold (controls prediction set size).
-
-    Returns:
-        prediction_sets: Boolean array (n_samples, n_classes), 
-                         where True indicates class inclusion in the prediction set.
-    """
-
-    # Compute softmax probabilities for the given subset
-    softmax_probs = model.predict_proba(subset_df)
-    # Construct prediction sets for instances in the given subset
-    prediction_sets = softmax_probs >= (1 - qhat)
-    
-    return prediction_sets
 
 if __name__ == "__main__":
     
@@ -142,15 +121,18 @@ if __name__ == "__main__":
 
     # Example: inspect first test instance
     test_idx = 0
-    print("Test instance:\n", X_test.iloc[test_idx])
-    print("\nSubset test instance", test_idx, ":\n")
+    print("Test instance:", test_idx, X_test.iloc[test_idx], "\n")
+    print("\nSubset of test instance", test_idx, ":\n")
     print(all_subsets[test_idx])
     print("Similarities:\n", similarities_list[test_idx])
 
     # Construct and visualize prediction sets for first test instance
+    alpha = 0.01
+    # Compute global qhat once using calibration data
+    qhat = compute_conformal_threshold(xgb_cl, X_conf_pred, y_conf_pred, alpha)
+    print("qhat:", qhat)
     prediction_sets = construct_prediction_sets(xgb_cl, all_subsets[test_idx], qhat)
-    print("Shape of prediction sets:", prediction_sets.shape)
-
+    
     # Display classes included in each prediction set vs. true labels
     class_names = xgb_cl.classes_
     for i in range(len(prediction_sets)):
