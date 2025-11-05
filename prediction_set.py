@@ -4,28 +4,29 @@ import xgboost as xgb
 from model_training import X_conf_pred, y_conf_pred, X_test, y_test
 import matplotlib.pyplot as plt
 
+def compute_conformal_threshold(model, X_cal, y_cal, alpha=0.05):
+    """
+    Compute the conformal calibration threshold q̂ using a holdout (calibration) set.
 
-def compute_conformal_prediction_set_batch(model, X_cal, y_cal, X_to_test, alpha=0.05):
-    """Compute conformal prediction sets for all instances in X_to_test using calibration data (X_cal, y_cal).
+    This threshold quantifies how "uncertain" the model can be while still maintaining
+    the desired confidence level (1 - alpha). It is later used to decide which classes
+    to include in the prediction set.
+
     Args:
         model : fitted classifier
-        A trained classifier with a `predict_proba()` method (e.g., XGBoost, RandomForest, etc.).
+            Trained model supporting `predict_proba()`.
         X_cal : array-like of shape (n_cal, n_features)
-            Calibration (holdout) set used to compute conformality scores.
+            Calibration (holdout) set features.
         y_cal : array-like of shape (n_cal,)
             True labels for the calibration samples.
-        X_to_test : array-like of shape (n_test, n_features)
-            Instances for which to compute prediction sets.
         alpha : float, default=0.05
-            Miscoverage level. A value of 0.05 corresponds to 95% coverage (confidence).
+            Target miscoverage rate (i.e., 5% means 95% coverage).
+
     Returns:
-        prediction_sets : np.ndarray of bool, shape (n_test, n_classes)
-            Boolean mask where entry (i, j) is True if class j is included 
-            in the conformal prediction set for instance i.
         qhat : float
-            Quantile threshold computed from the calibration scores.
+            Empirical quantile of nonconformality scores, used as the threshold
+            for constructing conformal prediction sets.
     """
-    
     # Number of samples in the calibration (conformal prediction) set
     n = y_cal.shape[0]
 
@@ -42,13 +43,69 @@ def compute_conformal_prediction_set_batch(model, X_cal, y_cal, X_to_test, alpha
     q_level = np.ceil((n + 1) * (1 - alpha)) / n
     qhat = np.quantile(cal_scores, q_level, method='higher')    # Empirical quantile of calibration scores
 
+    return qhat
+
+def construct_prediction_sets(model, X_to_test, qhat):
+    """Construct conformal prediction sets given a model and precomputed threshold q̂.
+
+    Each prediction set contains all classes whose predicted probability is at least
+    (1 - qhat), ensuring that the overall coverage is approximately (1 - alpha).
+
+    Args:
+        model : fitted classifier
+            Trained model supporting `predict_proba()`.
+        X_to_test : array-like of shape (n_test, n_features)
+            Instances for which to compute prediction sets.
+        qhat : float
+            Calibrated conformal threshold obtained from a calibration set.
+
+    Returns:
+        prediction_sets : np.ndarray of bool, shape (n_test, n_classes)
+            Boolean mask where entry (i, j) is True if class j is included
+            in the prediction set for test instance i.
+    """
+
     # Compute softmax probabilities for the set to test
     test_softmax = model.predict_proba(X_to_test) 
     
     # Construct prediction sets for each instance of the set to test
     prediction_sets = test_softmax >= (1 - qhat)                # Prediction set: classes with probability >= 1 - qhat
 
+    return prediction_sets
+
+def compute_conformal_prediction_set_batch(model, X_cal, y_cal, X_to_test, alpha=0.05):
+    """Convenience wrapper that performs both calibration and prediction in one step.
+
+    This function first computes qhat using a calibration set and then constructs
+    conformal prediction sets for the given test data.
+
+    Args:
+        model : fitted classifier
+            Trained model supporting `predict_proba()`.
+        X_cal : array-like of shape (n_cal, n_features)
+            Calibration (holdout) set features.
+        y_cal : array-like of shape (n_cal,)
+            True labels for calibration samples.
+        X_to_test : array-like of shape (n_test, n_features)
+            Test data for which prediction sets are computed.
+        alpha : float, default=0.05
+            Miscoverage level (1 - alpha is the target confidence level).
+
+    Returns:
+        prediction_sets : np.ndarray of bool, shape (n_test, n_classes)
+            Boolean mask indicating class inclusion in each prediction set.
+        qhat : float
+            Empirical quantile threshold from calibration.
+    """
+    
+    # Calibrate the conformal threshold qhat on the calibration data
+    qhat = compute_conformal_threshold(model, X_cal, y_cal, alpha)
+
+    # Construct prediction sets target data
+    prediction_sets = construct_prediction_sets(model, X_to_test, qhat)
+
     return prediction_sets, qhat
+
 
 if __name__ == "__main__":
 
