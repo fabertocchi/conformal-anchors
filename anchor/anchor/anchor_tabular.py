@@ -328,6 +328,8 @@ class AnchorTabularExplainer(object):
                       mode="standard",              # "standard" or "conformal"
                       query_label=None, qhat=None,  # used only if mode="conformal"
                       desired_label=None,
+                      predicate_mode="original",    # "original" or "mean_instances"
+                      mean_instances=None,          # used only if predicate_mode="mean_instances"
                       verbose=True):
         """Prepares the sampling function for generating perturbed samples around a reference example
         and evaluates how often a trained model keeps the same prediction under those perturbations."""
@@ -351,33 +353,59 @@ class AnchorTabularExplainer(object):
         # if verbose:
         #     print("True label is:", true_label)
 
+        if predicate_mode == "mean_instances":
+            if mean_instances is None:
+                raise ValueError("`mean_instances` must be provided in mean_instances mode.")
+            mean_instances = mean_instances
+            print("Mean instances", mean_instances)
+            # print("len mean instances", len(mean_instances))
+        
+        elif predicate_mode == "original":
+            mean_instances = [data_row]
+                
         # Discretize the reference row and build candidate predicates (`mapping`)
         mapping = {}    # will hold a dictionary of candidate predicates: idx -> (feature_index, operator, value)
-        data_row = self.disc.discretize(data_row.reshape(1, -1))[0]         # Identity if None
+        
+        for mean_instance in mean_instances:
+            mean_instance_disc = self.disc.discretize(mean_instance.reshape(1, -1))[0]        # Identity if None
 
-        # Explore logical conditions over feature values, enumerating every allowable condition for categorical and ordinal features
-        # * Ordinal features produce '<=' and '>=' conditions for each possible threshold value
-        # * Nominal categorical features produce '==' conditions for each possible category value
-        # Each predicate is stored in `mapping` using an integer key.
-        for f in self.categorical_features:         # f is an int (column index), categorical_features (and ordinal_features) must be list of int
+            # Explore logical conditions over feature values, enumerating every allowable condition for categorical and ordinal features
+            # * Ordinal features produce '<=' and '>=' conditions for each possible threshold value
+            # * Nominal categorical features produce '==' conditions for each possible category value
+            # Each predicate is stored in `mapping` using an integer key.
+            for f in self.categorical_features:         # f is an int (column index), categorical_features (and ordinal_features) must be list of int
 
-            if f in self.ordinal_features:
-                # For ordinal features, create <= or >= threshold tests for each value.
-                for v in self.categorical_names[f]:
+                if f in self.ordinal_features:
+                    # For ordinal features, create <= or > threshold tests for each value.
+                    for v in self.categorical_names[f]:
+                        idx = len(mapping)
+                        if mean_instance_disc[f] <= v: # and v != self.categorical_names[f][-1]: #v != len(self.categorical_names[f]) - 1:
+                            mapping[idx] = (f, 'leq', v)
+                            # print("value of feature", f, ":", data_row[f], "condition added:", mapping[idx])
+                            # names[idx] = '%s <= %s' % (self.feature_names[f], v)
+                        elif mean_instance_disc[f] > v:
+                            mapping[idx] = (f, 'geq', v)
+                            # print("value of feature", f, ":", data_row[f], "condition added:", mapping[idx])
+                            # names[idx] = '%s > %s' % (self.feature_names[f], v)
+                        
+                else:
+                    # For nominal features, create an equality test matching the reference value.
                     idx = len(mapping)
-                    if data_row[f] <= v: # and v != self.categorical_names[f][-1]: #v != len(self.categorical_names[f]) - 1:
-                        mapping[idx] = (f, 'leq', v)
-                        # print("value of feature", f, ":", data_row[f], "condition added:", mapping[idx])
-                        # names[idx] = '%s <= %s' % (self.feature_names[f], v)
-                    elif data_row[f] > v:
-                        mapping[idx] = (f, 'geq', v)
-                        # print("value of feature", f, ":", data_row[f], "condition added:", mapping[idx])
-                        # names[idx] = '%s > %s' % (self.feature_names[f], v)
-                    
-            else:
-                # For nominal features, create an equality test matching the reference value.
-                idx = len(mapping)
-                mapping[idx] = (f, 'eq', data_row[f])
+                    mapping[idx] = (f, 'eq', mean_instance_disc[f])
+        # print("Initial mapping", mapping)
+        # Remove duplicate predicates (same feature, operator, value)
+        seen = set()
+        unique_mapping = {}
+        for idx, (f, op, v) in mapping.items():
+            key = (f, op, v)
+            if key not in seen:
+                seen.add(key)
+                unique_mapping[len(unique_mapping)] = (f, op, v)
+        mapping = unique_mapping
+
+        # print("mapping", mapping)
+        if verbose:
+            print(f"Generated {len(mapping)} unique predicates from {len(mean_instances)} mean instances")
         
         # Define actual sampler
         def sample_fn(present, num_samples, compute_labels=True):
@@ -389,18 +417,18 @@ class AnchorTabularExplainer(object):
             conditions_leq = {}
             conditions_geq = {}
 
-            #print("present predicates:", present)
-
             # Convert integers in `present` back to actual predicates using `mapping`, split into condition types dictionaries
             for x in present:
                 f, op, v = mapping[x]
                 if op == 'eq':
                     conditions_eq[f] = v
                 if op == 'leq':
+                    # keep the tightest (lowest) upper bound
                     if f not in conditions_leq:
                         conditions_leq[f] = v
                     conditions_leq[f] = min(conditions_leq[f], v)
                 if op == 'geq':
+                    # keep the tightest (largest) lower bound
                     if f not in conditions_geq:
                         conditions_geq[f] = v
                     conditions_geq[f] = max(conditions_geq[f], v)
@@ -449,18 +477,21 @@ class AnchorTabularExplainer(object):
 
     def explain_instance(self, data_row, classifier, mode="standard", query_label=None, qhat=None, threshold=0.95,
                           delta=0.1, tau=0.15, batch_size=100,
-                          max_anchor_size=None, desired_label=None, beam_size=4, **kwargs):
+                          max_anchor_size=None, desired_label=None, beam_size=10, predicate_mode="original",
+                          mean_instances=None, **kwargs):
         """Run the Anchor beam search on ``data_row`` and package the result."""
         
         # Build the perturbation sampler and predicate mapping for this instance.
-        sample_fn, mapping = self.get_sample_fn(data_row, classifier, mode=mode, query_label=query_label, qhat=qhat, desired_label=desired_label)
+        sample_fn, mapping = self.get_sample_fn(data_row, classifier, mode=mode, query_label=query_label, qhat=qhat, desired_label=desired_label, predicate_mode=predicate_mode,
+                                                mean_instances=mean_instances)
         
         # Run Anchor beam search passing the sampling closure and the statistical guarantees
         # The beam search proposes combinations of predicates, uses `sample_fn` to estimate their precision and coverage, 
         # and returns the best anchor satisfying the user-supplied thresholds.
         exp = anchor_base.AnchorBaseBeam.anchor_beam(
             sample_fn, delta=delta, epsilon=tau, batch_size=batch_size,
-            desired_confidence=threshold, max_anchor_size=max_anchor_size,
+            desired_confidence=threshold, beam_size=beam_size, max_anchor_size=max_anchor_size,
+            mapping=mapping, enable_conflict_check=True,
             **kwargs)
         
         # Convert predicate indices into readable feature/value strings.
@@ -521,7 +552,9 @@ class AnchorTabularExplainer(object):
                 else:
                     condition = f"{fname} = {v:.2f}"
 
-            elif op in ('geq', 'leq') and f not in handled:
+            elif op in ('geq', 'leq'):
+                if f in handled:
+                    continue
                 geq, leq = ordinal_ranges.get(f, (float('-inf'), float('inf')))
                 # If feature f has both finite bounds, print them together as a bounded interval
                 if geq > float('-inf') and leq < float('inf'):
@@ -536,8 +569,8 @@ class AnchorTabularExplainer(object):
                     condition = f"{fname}: unconstrained"
                 handled.add(f)
 
-            else:
-                condition = f"{fname} {op} {v}"
+            # else:
+            #     condition = f"{fname} {op} {v}"
 
             hoeffding_exp['names'].append(condition)
 
