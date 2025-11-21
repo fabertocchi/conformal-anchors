@@ -5,6 +5,7 @@ import operator
 import copy
 import sklearn
 import collections
+import math
 
 
 def matrix_subset(matrix, n_samples):
@@ -13,6 +14,66 @@ def matrix_subset(matrix, n_samples):
     n_samples = min(matrix.shape[0], n_samples)
     return matrix[np.random.choice(matrix.shape[0], n_samples, replace=False)]
 
+
+def _accum_constraints(indices, mapping):
+    """From predicate indices -> per-feature constraints."""
+    # Dictionary to collect constraints per-feature
+    by_feat = {}
+    for i in indices:
+        f, op, v = mapping[i]
+        d = by_feat.setdefault(f, {"eq": None, "geq": None, "leq": None})
+        if op == "eq":
+            if d["eq"] is None:
+                d["eq"] = v
+        elif op == "geq":
+            # Keep the largest geq
+            d["geq"] = v if d["geq"] is None or v > d["geq"] else d["geq"]
+        elif op == "leq":
+            # Keep the smallest leq
+            d["leq"] = v if d["leq"] is None or v < d["leq"] else d["leq"]
+
+        # print("Accumulating constraint:", f, op, v, "->", by_feat[f])
+    return by_feat
+
+def check_predicate_conflict(mapping, tuple_indices, new_idx):
+    """
+    Return True if adding mapping[new_idx] conflicts with constraints implied by tuple_indices.
+    Handles eq/eq, eq vs geq/leq, and geq vs leq.
+    """
+    f, op, v = mapping[new_idx]
+    #print("Checking conflict for adding:", f, op, v)
+    cons = _accum_constraints(tuple_indices, mapping)
+
+    # if current tuple has no constraints for this feature: no conflict
+    if f not in cons:
+        return False
+
+    # Unpack existing constraints for the feature
+    eqv, lo, hi = cons[f]["eq"], cons[f]["geq"], cons[f]["leq"]
+    # print("Existing constraints:", f, "eq:", eqv, "geq:", lo, "leq:", hi)
+
+    def isnum(x): return (x is not None) and not (isinstance(x, float) and math.isnan(x))
+
+    if op == "eq":
+        # If there is already an equality and it is different: conflict
+        if eqv is not None and eqv != v: return True
+        # It must satisfy existing geq/leq (conflict if it falls outside)
+        if isnum(lo) and isnum(v) and v < lo: return True
+        if isnum(hi) and isnum(v) and v > hi: return True
+
+    elif op == "geq":
+        # If there is an equality and it's below the new lower bound: conflict
+        if isnum(eqv) and isnum(v) and eqv < v: return True
+        # If there is upper bound but new lower bound is above it: conflict
+        if isnum(hi) and isnum(v) and v > hi: return True
+
+    elif op == "leq":
+        # If there is an equality and it's above the new upper bound: conflict
+        if isnum(eqv) and isnum(v) and eqv > v: return True
+        # If there is lower bound but new upper bound is below it: conflict
+        if isnum(lo) and isnum(v) and v < lo: return True
+
+    return False
 
 class AnchorBaseBeam(object):
     def __init__(self):
@@ -175,7 +236,7 @@ class AnchorBaseBeam(object):
                 # print("len t_coverage_idx", len(state['t_coverage_idx'][x]))
                 # print("t_coverage", state['t_coverage'][x])
             # print(state['t_idx'], state['t_nsamples'], state['t_positives'], state['t_order'], state['t_coverage'])
-            
+            # print("initial tuples:", tuples)
             return tuples
         
         
@@ -184,14 +245,26 @@ class AnchorBaseBeam(object):
         # print("previous_best", previous_best)
         for f in all_features:
             for t in previous_best:
+                if state.get('enable_conflict_check', True) and state.get('mapping') is not None:
+                
+                # 1) against the current tuple t
+                    if check_predicate_conflict(state['mapping'], t, f):
+                        # print("Conflict detected when adding", f, "to", t)
+                        continue
+                    # 2) against the current best (store it in state before this call; see below)
+                    best_t = state.get('best_tuple_indices')
+                    if best_t and check_predicate_conflict(state['mapping'], best_t, f):
+                        # print("Conflict detected when adding", f, "to best", best_t)
+                        continue
                 # print("t", t)
                 # Add feature f to existing tuple t
                 new_t = normalize_tuple(t + (f, ))
+                # print("Trying to create new tuple", new_t)
                 # print("before new_t", new_t)
                 
                 # Skip adding f if it is already present in t
                 if len(new_t) != len(t) + 1:
-                    #print("skipped", new_t)
+                    #print("skipped", new_t, "already present in", t)
                     continue
                 
                 # If new tuple not already created 
@@ -219,7 +292,7 @@ class AnchorBaseBeam(object):
                     state['t_nsamples'][new_t] = float(len(idx_list))   # Number of samples satisfying new rule
                     state['t_positives'][new_t] = np.sum(               # Number of positives among them
                         state['labels'][idx_list])
-        # print("output", list(new_tuples), len(list(new_tuples)))
+        # print("output", sorted(list(new_tuples)), len(list(new_tuples)))
         return list(new_tuples)
 
     @staticmethod
@@ -340,10 +413,10 @@ class AnchorBaseBeam(object):
 
     @staticmethod
     def anchor_beam(sample_fn, delta=0.05, epsilon=0.1, batch_size=10,
-                    min_shared_samples=0, desired_confidence=1, beam_size=1,
+                    min_shared_samples=0, desired_confidence=1, beam_size=10,
                     verbose=False, epsilon_stop=0.05, min_samples_start=0,
                     max_anchor_size=None, verbose_every=1,
-                    stop_on_first=False, coverage_samples=10000):
+                    stop_on_first=False, coverage_samples=10000, mapping=None, enable_conflict_check=False):
         """Search for a high-precision anchor using the beam search strategy."""
        
         # Placeholders for the final anchor statistics
@@ -416,7 +489,9 @@ class AnchorBaseBeam(object):
                  't_coverage_idx': collections.defaultdict(lambda: set()),      # Coverage indices for each anchor tuple
                  't_coverage': collections.defaultdict(lambda: 0.),             # Coverage values for each anchor tuple
                  'coverage_data': coverage_data,
-                 't_order': collections.defaultdict(lambda: list())
+                 't_order': collections.defaultdict(lambda: list()),
+                 'mapping': mapping,
+                 #'enable_conflict_check': bool(enable_conflict_check)
                  }
         # Beam search loop: iteratively grow the current best rules by adding one predicate at a time
         current_size = 1                                            # Current size of the anchors being considered    
@@ -430,12 +505,16 @@ class AnchorBaseBeam(object):
 
         # Expand anchors by one predicate at a time, up to max_anchor_size
         while current_size <= max_anchor_size:
+            # print("----------------")
+            # print("Current size:", current_size)
             # Generate all candidate tuples of length 'current_size' by extending the best anchors of size 'current_size - 1'
             tuples = AnchorBaseBeam.make_tuples(
                 best_of_size[current_size - 1], state)
+            # print("tuples before filtering:", tuples)
             # Filter out tuples with coverage less than the best found so far
             tuples = [x for x in tuples
                       if state['t_coverage'][x] > best_coverage]
+            # print("Filtered tuples:", tuples)
             if len(tuples) == 0:
                 break
             # Prepare sampling functions and initial statistics for the current set of candidate tuples
@@ -444,12 +523,15 @@ class AnchorBaseBeam(object):
             initial_stats = AnchorBaseBeam.get_initial_statistics(tuples,
                                                                   state)
             # Use KL-LUCB to efficiently identify top-B candidates by precision
+            # print(min(beam_size, len(tuples)), "tuples will be selected by KL-LUCB")
             chosen_tuples = AnchorBaseBeam.lucb(
                 sample_fns, initial_stats, epsilon, delta, batch_size,
                 min(beam_size, len(tuples)),
                 verbose=verbose, verbose_every=verbose_every)
+            # print("chosen tuples:", chosen_tuples)
             # Keep the B-best rules of the current size for the next iteration
             best_of_size[current_size] = [tuples[x] for x in chosen_tuples]
+            # print(f"Best of size {current_size}:", best_of_size[current_size])
             if verbose:
                 print('Best of size ', current_size, ':')
             
@@ -465,8 +547,8 @@ class AnchorBaseBeam(object):
                 ub = AnchorBaseBeam.dup_bernoulli(
                     mean, beta / state['t_nsamples'][t])
                 coverage = state['t_coverage'][t]
-                if verbose:
-                    print(i, mean, lb, ub)
+
+                # print("chosen tuple:", i, "precision:", mean, "lb:", lb, "ub:", ub)
                 # Keep sampling until the confidence interval is sufficiently tight
                 while ((mean >= desired_confidence and lb < desired_confidence - epsilon_stop) or
                        (mean < desired_confidence and ub >= desired_confidence + epsilon_stop)):
@@ -477,13 +559,13 @@ class AnchorBaseBeam(object):
                         mean, beta / state['t_nsamples'][t])
                     ub = AnchorBaseBeam.dup_bernoulli(
                         mean, beta / state['t_nsamples'][t])
-                if verbose:
-                    print('%s mean = %.2f lb = %.2f ub = %.2f coverage: %.2f n: %d' % (t, mean, lb, ub, coverage, state['t_nsamples'][t]))
+                
+                # print('%s mean = %.2f lb = %.2f ub = %.2f coverage: %.2f n: %d' % (t, mean, lb, ub, coverage, state['t_nsamples'][t]))
                 # If precision is confidently above the threshold => valid anchor
                 if mean >= desired_confidence and lb > desired_confidence - epsilon_stop:
-                    if verbose:
-                        print('Found eligible anchor ', t, 'Coverage:',
-                              coverage, 'Is best?', coverage > best_coverage)
+                    
+                    # print('Found eligible anchor ', t, 'Coverage:',
+                              # coverage, 'Is best?', coverage > best_coverage)
                     # Choose the anchor with highest coverage among valid ones
                     if coverage > best_coverage:
                         best_coverage = coverage
@@ -494,6 +576,7 @@ class AnchorBaseBeam(object):
             if stop_this:
                 break
             current_size += 1
+            # print("Current size increased to", current_size)
         # If no anchor satisfied the confidence condition
         if best_tuple == ():
             # Could not find an anchor, will now choose the highest precision
@@ -514,6 +597,6 @@ class AnchorBaseBeam(object):
                 sample_fns, initial_stats, epsilon, delta, batch_size,
                 1, verbose=verbose)
             best_tuple = tuples[chosen_tuples[0]]
-        print("Best tuple:", best_tuple)
+        # print("Best tuple:", best_tuple)
         # Return the final anchor as a readable structure
         return AnchorBaseBeam.get_anchor_from_tuple(best_tuple, state)
