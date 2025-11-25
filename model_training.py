@@ -10,15 +10,19 @@ from sklearn.model_selection import learning_curve
 
 # Upload the two versions of the dataset
 # df_v1 = pd.read_csv("generated_datasets/synthetic_patient_basic_setting_v1.csv")
-# df_v2 = pd.read_csv("generated_datasets/synthetic_patient_basic_setting_v2.csv")
+df_v2_orig = pd.read_csv("generated_datasets/synthetic_patient_basic_setting_v2.csv")
 
 # Upload the binned version of the dataset
 df_v2 = pd.read_csv("generated_datasets/synthetic_patient_basic_setting_v2_binned.csv")
 
-# Define X and y
+# Define X and y for binned dataset
 y = df_v2['disease']
 X = df_v2.drop(columns=['disease', 'patient_id', 'disease_group'])
 classes = y.unique()
+
+# Define X and y for original dataset
+y_orig = df_v2_orig['disease']
+X_orig = df_v2_orig.drop(columns=['disease', 'patient_id', 'disease_group'])
 
 # Convert categorical target variable to numerical: it is needed for XGBoost
 y_cat = y.astype('category')       # Data type of elements of y becomes 'category' (order is defined by order of categories)
@@ -28,10 +32,18 @@ categories = y_cat.cat.categories  # Index of category labels
 if y.dtype == 'O':
     y = y.astype('category').cat.codes  # maps categories to 0,...,n-1
 
-# Split the data: we want training 65%, testing 15%, pool for anchors 10%, set for conformal predictions 10%
+if y_orig.dtype == 'O':
+    y_orig = y_orig.astype('category').cat.codes  # maps categories to 0,...,n-1
+
+# Split the binned data: we want training 65%, testing 15%, pool for anchors 10%, set for conformal predictions 10%
 X_train, X_temp, y_train, y_temp = train_test_split(X, y, train_size=0.65, random_state=42, stratify=y)
 X_test, X_temp2, y_test, y_temp2 = train_test_split(X_temp, y_temp, train_size=0.4286, random_state=42, stratify=y_temp)
 X_anchors, X_conf_pred, y_anchors, y_conf_pred = train_test_split(X_temp2, y_temp2, train_size=0.5, random_state=42, stratify=y_temp2)
+
+# Split the original data: we want training 65%, testing 15%, pool for anchors 10%, set for conformal predictions 10%
+X_train_orig, X_temp_orig, y_train_orig, y_temp_orig = train_test_split(X_orig, y_orig, train_size=0.65, random_state=42, stratify=y_orig)
+X_test_orig, X_temp2_orig, y_test_orig, y_temp2_orig = train_test_split(X_temp_orig, y_temp_orig, train_size=0.4286, random_state=42, stratify=y_temp_orig)
+X_anchors_orig, X_conf_pred_orig, y_anchors_orig, y_conf_pred_orig = train_test_split(X_temp2_orig, y_temp2_orig, train_size=0.5, random_state=42, stratify=y_temp2_orig)
 
 # Define parameters for XGBClassifier model
 param_dict_xgb = {
