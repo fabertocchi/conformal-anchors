@@ -107,3 +107,6 @@ and only_same_prediction at the same time')
     def save_to_file(self, file_path, **kwargs):
         out = self.as_html(**kwargs)
         io.open(file_path, 'w').write(out)
+    
+    def cumulative_coverage(self):
+        return self.exp_map.get('cumulative_coverage', None)
