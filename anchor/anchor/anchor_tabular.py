@@ -488,7 +488,7 @@ class AnchorTabularExplainer(object):
         # Run Anchor beam search passing the sampling closure and the statistical guarantees
         # The beam search proposes combinations of predicates, uses `sample_fn` to estimate their precision and coverage, 
         # and returns the best anchor satisfying the user-supplied thresholds.
-        exp = anchor_base.AnchorBaseBeam.anchor_beam(
+        exp, valid_anchors = anchor_base.AnchorBaseBeam.anchor_beam(
             sample_fn, delta=delta, epsilon=tau, batch_size=batch_size,
             desired_confidence=threshold, beam_size=beam_size, max_anchor_size=max_anchor_size,
             mapping=mapping, enable_conflict_check=True,
@@ -496,6 +496,7 @@ class AnchorTabularExplainer(object):
         
         # Convert predicate indices into readable feature/value strings.
         self.add_names_to_exp(data_row, exp, mapping)
+
         exp['instance'] = data_row
         if mode == "conformal":
             probs = classifier.predict_proba(self.encoder_fn(data_row.reshape(1, -1)))
@@ -504,10 +505,19 @@ class AnchorTabularExplainer(object):
             preds = classifier.predict(self.encoder_fn(data_row.reshape(1, -1)))
             exp['prediction'] = int(preds[0])
 
+        # Convert all valid anchors to readable format
+        for va in valid_anchors:
+            self.add_names_to_exp(data_row, va, mapping)
+            va['instance'] = data_row
+            if mode == "conformal":
+                va['prediction'] = exp['prediction']  # same class as main exp
+            else:
+                va['prediction'] = exp['prediction']
+
         # Wrap up the payload as an AnchorExplanation ready for rendering.
         explanation = anchor_explanation.AnchorExplanation('tabular', exp, self.as_html)
         
-        return explanation
+        return explanation, valid_anchors
 
     def add_names_to_exp(self, data_row, hoeffding_exp, mapping):
         """Attach human-readable strings to the predicates stored in ``hoeffding_exp``."""
@@ -516,13 +526,13 @@ class AnchorTabularExplainer(object):
 
         # Integer predicate indices selected by the beam search (before translation).
         idxs = hoeffding_exp['feature']
-        print("Indices of predicates:", idxs, "corresponding to predicates:", [mapping[idx] for idx in idxs])
+        # print("Indices of predicates:", idxs, "corresponding to predicates:", [mapping[idx] for idx in idxs])
 
         # Prepare a list to hold the readable names, and rewrite the feature list using mapping
         # so it contains raw column indices instead of predicate indices.
         hoeffding_exp['names'] = []
         hoeffding_exp['feature'] = [mapping[idx][0] for idx in idxs]        # Replace predicate indices list with true feature column indices list
-        print("Features in anchor:", hoeffding_exp['feature'])
+        # print("Features in anchor:", hoeffding_exp['feature'])
         # Loop through the chosen predicates and, for every `>` or `<=` condition,
         # update `ordinal_ranges[f]` so it tracks the tightest lower and upper bounds seen for each ordinal feature `f`.
         ordinal_ranges = {}
