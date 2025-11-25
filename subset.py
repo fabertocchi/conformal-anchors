@@ -53,7 +53,7 @@ def get_knn_subsets(X_test, X_anchors, y_anchors, k=25):
         y_subsets(list[pd.Series]): List of label Series corresponding to each subset.
         similarities_list (list[np.ndarray]): List of similarity scores for the selected k anchors.
     """
-    all_subsets, y_subsets, similarities_list = [], [], []
+    all_subsets, y_subsets, similarities_list, k_nearest_indices_list = [], [], [], []
 
     for test_idx in range(len(X_test)):
         # Select the current test instance and retain only valid (non-NaN) features
@@ -69,6 +69,7 @@ def get_knn_subsets(X_test, X_anchors, y_anchors, k=25):
 
         # Identify indices of the k most similar anchors (sorted descending by similarity)
         k_nearest_indices = np.argsort(-similarities)[:k]  
+        k_nearest_indices_list.append(k_nearest_indices)
 
         # Retrieve the corresponding feature rows and labels
         subset_df = X_anchors.iloc[k_nearest_indices].reset_index(drop=True)
@@ -79,7 +80,7 @@ def get_knn_subsets(X_test, X_anchors, y_anchors, k=25):
         y_subsets.append(y_subset_df)                                               # Save corresponding labels
         similarities_list.append(similarities[k_nearest_indices])
 
-    return all_subsets, y_subsets, similarities_list
+    return all_subsets, y_subsets, similarities_list, k_nearest_indices_list
 
 def compute_subset_accuracies(model, all_subsets, y_subsets):
     """
@@ -109,7 +110,7 @@ if __name__ == "__main__":
     k = 25              # Number of nearest neighbors
 
     # Compute k-nearest subsets for each test instance
-    all_subsets, y_subsets, similarities_list = get_knn_subsets(X_test, X_anchors, y_anchors, k=k)
+    all_subsets, y_subsets, similarities_list, k_nearest_indices = get_knn_subsets(X_test, X_anchors, y_anchors, k=k)
 
     # Load trained XGBoost model
     xgb_cl = xgb.XGBClassifier()
