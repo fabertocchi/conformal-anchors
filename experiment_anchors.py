@@ -1,27 +1,20 @@
 # ---------------------------------------------------------
-# Experiment: Exclude TRUE label, using ONLY same-label neighbors
-# + Check whether anchors apply to the patient instance
+# Run experiment on up to 100 test instances
 # ---------------------------------------------------------
 
 from anchor.anchor.anchor_tabular import * 
-from model_training import (
-    X_train, y_train, X_conf_pred, y_conf_pred,
-    X_anchors, y_anchors, X_test, y_test,
-    X_train_orig, y_train_orig,
-    X_conf_pred_orig, y_conf_pred_orig,
-    X_anchors_orig, y_anchors_orig,
-    X_test_orig, y_test_orig,
-    categories
-)
+from model_training import X_train, y_train, X_conf_pred, y_conf_pred, X_anchors, y_anchors, X_test, y_test, X_train_orig, y_train_orig, X_conf_pred_orig, y_conf_pred_orig, X_anchors_orig, y_anchors_orig, X_test_orig, y_test_orig
 import xgboost as xgb
 from subset import get_knn_subsets
 from prediction_set import compute_conformal_prediction_set_batch
+from model_training import categories
 import matplotlib.pyplot as plt
 from data.tests_v2 import TESTS
 from binning import bin_dataset
 import pandas as pd
-import numpy as np
 import time
+
+np.random.seed(1)
 
 def anchor_applies_to_instance(predicate_names, patient_series):
     """
@@ -51,6 +44,7 @@ def anchor_applies_to_instance(predicate_names, patient_series):
             # Unknown pattern -> be conservative: treat as not satisfied
             return False
 
+        # Remove spaces at the beginning and at the end of the strings
         feature = feature.strip()
         thresh = thresh.strip()
 
@@ -94,11 +88,6 @@ def anchor_applies_to_instance(predicate_names, patient_series):
     # All predicates satisfied
     return True
 
-# ---------------------------------------------------------
-# 0) Setup
-# ---------------------------------------------------------
-np.random.seed(1)
-
 # Load the trained model
 xgb_cl = xgb.XGBClassifier()
 xgb_cl.load_model("xgb_model.json")
@@ -112,32 +101,29 @@ generic_symptoms_cols = [
 
 start_time = time.time()
 
-# Compute k-nearest subsets for each test instance (in binned space)
-all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
-    X_test, X_anchors, y_anchors, k=100
-)
+# Compute k-nearest subsets for each test instance
+all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(X_test, X_anchors, y_anchors, k=100)
 
-# --- number of test instances to use ---
-n_instances = 100               # <-- change if you want more
+n_instances = 100
 n_instances = min(n_instances, len(X_test))   # safety
 beam_size = 20
 
-# Choose which test indices to use (random without replacement)
+# Choose which test indices to use (here: random without replacement)
 selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
 
-# To store per-(instance, mode) stats
+# To store per-(instance,mode) stats
 results = []
 
-output_path = "anchor_experiment_true_label_exclusion_same_label_neighbors_20_applicability.txt"
-
+output_path = "anchor_experiment_results_20.txt"
+# Open the output file in the "write" mode and write the header and a separator line
 with open(output_path, "w") as f:
-    f.write("EXPERIMENT: exclude TRUE label, using ONLY same-label neighbors\n")
+    f.write("EXPERIMENT ON ANCHORS (original vs mean-instances)\n")
     f.write(f"Number of test instances: {n_instances}\n")
     f.write(f"Beam size: {beam_size}\n")
     f.write("=" * 100 + "\n\n")
-    counter = 0     # instances where no prediction set excludes the true label
 
-    for run_id, new_patient_idx in enumerate(selected_test_indices, 1):
+    for run_id, new_patient_idx in enumerate(selected_test_indices, 1): # start counting from 1
+        # np.random.seed(1)
         f.write(f"### INSTANCE {run_id}/{n_instances}  (test index = {new_patient_idx})\n")
         f.write("-" * 80 + "\n")
 
@@ -151,60 +137,49 @@ with open(output_path, "w") as f:
         f.write(f"True label: {new_patient_true_label} ({categories[new_patient_true_label]})\n")
         f.write(f"Predicted label: {new_patient_pred} ({categories[new_patient_pred]})\n\n")
 
-        # KNN subset in binned space + raw space for this instance
-        subset_new_patient = all_subsets[new_patient_idx]     # binned features
+        # Subset + raw subset for this instance
+        subset_new_patient = all_subsets[new_patient_idx]
         y_subset_new_patient = y_subsets[new_patient_idx]
 
-        subset_new_patient_raw = X_anchors_orig.iloc[
-            indices_neighbors[new_patient_idx]
-        ].reset_index(drop=True)
-        y_subset_new_patient_raw = y_anchors_orig.iloc[
-            indices_neighbors[new_patient_idx]
-        ].reset_index(drop=True)
+        subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
+        y_subset_new_patient_raw = y_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
 
         # -----------------------------
-        # 2) KEEP ONLY SAME-LABEL NEIGHBORS
-        # -----------------------------
-        # mask: neighbors whose label == true label of new patient
-        mask_same_label = (y_subset_new_patient == new_patient_true_label)
-
-        subset_same_label = subset_new_patient[mask_same_label].reset_index(drop=True)
-        y_subset_same_label = y_subset_new_patient[mask_same_label].reset_index(drop=True)
-
-        subset_same_label_raw = subset_new_patient_raw[mask_same_label.values].reset_index(drop=True)
-        # y_subset_same_label_raw = y_subset_new_patient_raw[mask_same_label.values].reset_index(drop=True)
-
-        f.write(f"Total neighbors: {len(y_subset_new_patient)}, same-label neighbors: {len(y_subset_same_label)}\n")
-
-        # # Optional: if too few neighbors of same label, skip
-        # if subset_same_label.shape[0] < 5:
-        #     f.write(f"Not enough neighbors with true label {new_patient_true_label}. Skipping instance.\n\n")
-        #     f.write("-" * 80 + "\n\n")
-        #     counter += 1
-        #     continue
-
-        # -----------------------------
-        # 3) CONFORMAL PREDICTION SETS ON SAME-LABEL NEIGHBORS
+        # 2) CONFORMAL PREDICTION SETS
         # -----------------------------
         alpha = 0.01
         prediction_sets, qhat = compute_conformal_prediction_set_batch(
             xgb_cl,
             X_conf_pred,
             y_conf_pred,
-            subset_same_label,
+            subset_new_patient,
             alpha=alpha
         )
 
         f.write(f"qhat: {qhat:.5f}\n")
-        f.write(f"Prediction sets shape (same-label subset): {prediction_sets.shape}\n\n")
+        f.write(f"Prediction sets shape: {prediction_sets.shape}\n")
 
         # -----------------------------
-        # 4) LABEL TO EXCLUDE = TRUE LABEL
+        # 3) CHOOSE CLASS TO EXCLUDE
         # -----------------------------
-        label_to_exclude = int(new_patient_true_label)
-        f.write(f"Label to exclude (TRUE label): {label_to_exclude} ({categories[label_to_exclude]})\n\n")
+        labels_stomach = [1, 5, 6, 7, 8]
+        labels_lung = [0, 2, 3, 4, 9]
 
-        # Prediction set names
+        if new_patient_true_label in labels_stomach:
+            possible_labels = [i for i in labels_stomach if i != new_patient_true_label]
+            label_to_exclude = np.random.choice(possible_labels)
+        elif new_patient_true_label in labels_lung:
+            possible_labels = [i for i in labels_lung if i != new_patient_true_label]
+            label_to_exclude = np.random.choice(possible_labels)
+        else:
+            # fallback: just pick a random label != true one
+            all_labels = list(class_names)
+            possible_labels = [int(l) for l in all_labels if int(l) != int(new_patient_true_label)]
+            label_to_exclude = np.random.choice(possible_labels)
+        #label_to_exclude = new_patient_true_label
+
+        f.write(f"Class to exclude: {label_to_exclude} ({categories[label_to_exclude]})\n\n")
+
         pred_sets_names = [list(class_names[mask]) for mask in prediction_sets]
 
         pred_set_without_target = {}
@@ -213,35 +188,33 @@ with open(output_path, "w") as f:
                 pred_set_without_target[i] = pred_set
 
         if len(pred_set_without_target) == 0:
-            f.write("No prediction sets exclude the TRUE label\n")
+            f.write("No prediction sets exclude the target label. Skipping this instance.\n\n")
             f.write("-" * 80 + "\n\n")
-            counter += 1
             continue
 
-        f.write(f"{len(pred_set_without_target.keys())} prediction sets excluding TRUE label {label_to_exclude}:\n")
+        f.write(f"{len(pred_set_without_target.keys())} prediction sets excluding class {label_to_exclude}:\n")
         f.write(str(pred_set_without_target) + "\n\n")
 
         # -----------------------------
-        # 5) CHOOSE ANCHOR INSTANCE WITHIN SAME-LABEL SUBSET
+        # 4) CHOOSE ANCHOR INSTANCE WITHIN SUBSET
         # -----------------------------
         idx_example_to_anchor = np.random.choice(list(pred_set_without_target.keys()))
-
-        anchor_row = subset_same_label.iloc[idx_example_to_anchor].copy()
-        # overwrite generic symptoms with new patient's symptoms
+        #anchor_instance = subset_new_patient.iloc[idx_example_to_anchor].to_numpy()
+        anchor_row = subset_new_patient.iloc[idx_example_to_anchor].copy()
         anchor_row[generic_symptoms_cols] = new_patient[generic_symptoms_cols].values
         anchor_instance = anchor_row.to_numpy()
 
-        f.write(f"Anchor candidate index within same-label subset: {idx_example_to_anchor}\n")
-        f.write(f"True label of (original) anchor neighbor: {y_subset_same_label.iloc[idx_example_to_anchor]}\n")
-        f.write(f"Predicted label of modified anchor instance: {xgb_cl.predict(anchor_instance.reshape(1, -1))[0]}\n\n")
+        f.write(f"Anchor candidate index within subset: {idx_example_to_anchor}\n")
+        f.write(f"True label of anchor instance: {y_subset_new_patient.iloc[idx_example_to_anchor]}\n")
+        f.write(f"Predicted label of anchor instance: {xgb_cl.predict(anchor_instance.reshape(1, -1))[0]}\n\n")
 
         idxs_neighbors_excluding_target = list(pred_set_without_target.keys())
-        neighbors_excluding_target = subset_same_label.iloc[idxs_neighbors_excluding_target]
-        neighbors_excluding_target_raw = subset_same_label_raw.iloc[idxs_neighbors_excluding_target]
-        neighbors_labels = y_subset_same_label.iloc[idxs_neighbors_excluding_target]
+        neighbors_excluding_target = subset_new_patient.iloc[idxs_neighbors_excluding_target]
+        neighbors_excluding_target_raw = subset_new_patient_raw.iloc[idxs_neighbors_excluding_target]
+        neighbors_labels = y_subset_new_patient.iloc[idxs_neighbors_excluding_target]
 
         # -----------------------------
-        # 6) MEAN INSTANCES (for mean-instances mode)
+        # 5) MEAN INSTANCES (for mean-instances mode)
         # -----------------------------
         unique_labels = np.unique(neighbors_labels)
         mean_instances_raw = []
@@ -253,7 +226,7 @@ with open(output_path, "w") as f:
 
         mean_instances_df = pd.DataFrame(
             mean_instances_raw,
-            columns=X_train_orig.columns
+            columns=X_train_orig.columns   
         )
         mean_instances_binned_df = bin_dataset(
             mean_instances_df,
@@ -261,45 +234,43 @@ with open(output_path, "w") as f:
             generic_symptoms_cols=generic_symptoms_cols,
             verbose=False
         )
-        # overwrite generic symptoms with new patient's symptoms
         mean_instances_binned_df[generic_symptoms_cols] = (
             new_patient[generic_symptoms_cols].values
         )
 
         # -----------------------------
-        # 7) BUILD EXPLAINER (train on same-label neighbors)
+        # 6) BUILD EXPLAINER (once per instance)
         # -----------------------------
         feature_cols = X_train.columns.tolist()
         categorical_names = {}
-        indices = [i for i in range(len(subset_same_label)) if i != idx_example_to_anchor]
+        indices = [i for i in range(len(subset_new_patient)) if i != idx_example_to_anchor]
 
         explainer = AnchorTabularExplainer(
-            class_names=class_names,
+            class_names=class_names,     
             feature_names=feature_cols,
-            train_data=subset_same_label.iloc[indices].to_numpy(),
+            train_data=subset_new_patient.iloc[indices].to_numpy(),                     
             discretizer=None,
             categorical_names=categorical_names,
         )
 
         # ----------------------------------------------------
-        # 8) ORIGINAL MODE
+        # 7) ORIGINAL MODE
         # ----------------------------------------------------
         exp_original, valid_anchors_original = explainer.explain_instance(
             anchor_instance, xgb_cl, mode="conformal",
-            query_label=label_to_exclude, qhat=qhat,
+            query_label=label_to_exclude, qhat=qhat, 
             threshold=0.95, delta=0.1, tau=0.15, beam_size=beam_size,
             predicate_mode="original"
         )
 
         f.write("ORIGINAL MODE\n")
-        main_names_orig = exp_original.names()                             
-        f.write("Main anchor: %s\n" % (' AND '.join(main_names_orig)))
+        f.write("Main anchor: %s\n" % (' AND '.join(exp_original.names())))
         f.write("Precision: %.3f\n" % exp_original.precision())
         f.write("Coverage: %.5f\n" % exp_original.coverage())
         f.write("Cumulative coverage: %.5f\n" % exp_original.cumulative_coverage())
-        f.write(f"---> valid anchors found: {len(valid_anchors_original)} {[d['feature'] for d in valid_anchors_original]}\n")
 
-        # --- Applicability checks for ORIGINAL mode ---        # NEW
+        # ---- Check if main anchor and valid anchors apply to the patient ----
+        main_names_orig = exp_original.names()
         main_applies_orig = anchor_applies_to_instance(main_names_orig, new_patient)
         f.write(f"Does MAIN anchor (original) apply to patient? {main_applies_orig}\n")
 
@@ -307,8 +278,12 @@ with open(output_path, "w") as f:
         for va in valid_anchors_original:
             if anchor_applies_to_instance(va['names'], new_patient):
                 num_valid_apply_orig += 1
-        f.write(f"#valid anchors (original) applying to patient: {num_valid_apply_orig} / {len(valid_anchors_original)}\n")
+        f.write(
+            f"#valid anchors (original) applying to patient: "
+            f"{num_valid_apply_orig} / {len(valid_anchors_original)}\n"
+        )
 
+        # per-instance stats on valid anchors (original)
         if len(valid_anchors_original) > 0:
             num_feats_each = [len(va['feature']) for va in valid_anchors_original]
             avg_feats = float(np.mean(num_feats_each))
@@ -324,6 +299,7 @@ with open(output_path, "w") as f:
         f.write(f"Avg #features per valid anchor (original): {avg_feats:.3f}\n")
         f.write(f"#unique features across valid anchors (original): {num_unique_feats}\n")
 
+        # sorted printing
         sorted_valid_anchors_original = sorted(
             valid_anchors_original,
             key=lambda va: va['coverage'][-1],
@@ -333,15 +309,16 @@ with open(output_path, "w") as f:
             names = " AND ".join(va['names'])
             prec = va['precision'][-1]
             cov = va['coverage'][-1]
-            applies = anchor_applies_to_instance(va['names'], new_patient)   # NEW
+            applies = anchor_applies_to_instance(va['names'], new_patient)
             f.write(
-                f"  {i}) {names}  |  precision={prec:.3f}, coverage={cov:.5f}, applies_to_patient={applies}\n"
+                f"  {i}) {names}  |  precision={prec:.3f}, coverage={cov:.5f}, "
+                f"applies_to_patient={applies}\n"
             )
         f.write("\n")
 
+        # store results for global stats
         results.append({
             'instance_idx': new_patient_idx,
-            'label_to_exclude': label_to_exclude,
             'mode': 'original',
             'main_precision': exp_original.precision(),
             'main_coverage': exp_original.coverage(),
@@ -351,35 +328,33 @@ with open(output_path, "w") as f:
             'num_valid_anchors': len(valid_anchors_original),
             'main_applies': int(main_applies_orig),
             'num_valid_apply': num_valid_apply_orig,
-            'no_anchor_applies': int((not main_applies_orig) and (num_valid_apply_orig == 0)),
         })
 
         # ----------------------------------------------------
-        # 9) MEAN-INSTANCES MODE
+        # 8) MEAN-INSTANCES MODE
         # ----------------------------------------------------
         exp_mean, valid_anchors_mean = explainer.explain_instance(
-            anchor_instance,
-            xgb_cl,
+            anchor_instance, 
+            xgb_cl, 
             mode="conformal",
-            query_label=label_to_exclude,
-            qhat=qhat,
-            threshold=0.95,
-            delta=0.1,
+            query_label=label_to_exclude, 
+            qhat=qhat, 
+            threshold=0.95, 
+            delta=0.1, 
             tau=0.15,
             beam_size=beam_size,
-            predicate_mode="mean_instances",
+            predicate_mode="mean_instances",    
             mean_instances=mean_instances_binned_df.to_numpy()
         )
 
         f.write("MEAN-INSTANCES MODE\n")
-        main_names_mean = exp_mean.names()                               # NEW
-        f.write("Main anchor: %s\n" % (' AND '.join(main_names_mean)))
+        f.write("Main anchor: %s\n" % (' AND '.join(exp_mean.names())))
         f.write("Precision: %.3f\n" % exp_mean.precision())
         f.write("Coverage: %.5f\n" % exp_mean.coverage())
         f.write("Cumulative coverage: %.5f\n" % exp_mean.cumulative_coverage())
-        f.write(f"---> valid anchors found: {len(valid_anchors_mean)} {[d['feature'] for d in valid_anchors_mean]}\n")
 
-        # --- Applicability checks for MEAN-INSTANCES mode ---  
+        # ---- Check if main anchor and valid anchors apply to the patient ----
+        main_names_mean = exp_mean.names()
         main_applies_mean = anchor_applies_to_instance(main_names_mean, new_patient)
         f.write(f"Does MAIN anchor (mean-instances) apply to patient? {main_applies_mean}\n")
 
@@ -387,7 +362,10 @@ with open(output_path, "w") as f:
         for va in valid_anchors_mean:
             if anchor_applies_to_instance(va['names'], new_patient):
                 num_valid_apply_mean += 1
-        f.write(f"#valid anchors (mean) applying to patient: {num_valid_apply_mean} / {len(valid_anchors_mean)}\n")
+        f.write(
+            f"#valid anchors (mean) applying to patient: "
+            f"{num_valid_apply_mean} / {len(valid_anchors_mean)}\n"
+        )
 
         if len(valid_anchors_mean) > 0:
             num_feats_each_m = [len(va['feature']) for va in valid_anchors_mean]
@@ -413,15 +391,15 @@ with open(output_path, "w") as f:
             names = " AND ".join(va['names'])
             prec = va['precision'][-1]
             cov = va['coverage'][-1]
-            applies = anchor_applies_to_instance(va['names'], new_patient)   # NEW
+            applies = anchor_applies_to_instance(va['names'], new_patient)
             f.write(
-                f"  {i}) {names}  |  precision={prec:.3f}, coverage={cov:.5f}, applies_to_patient={applies}\n"
+                f"  {i}) {names}  |  precision={prec:.3f}, coverage={cov:.5f}, "
+                f"applies_to_patient={applies}\n"
             )
         f.write("\n")
 
         results.append({
             'instance_idx': new_patient_idx,
-            'label_to_exclude': label_to_exclude,
             'mode': 'mean',
             'main_precision': exp_mean.precision(),
             'main_coverage': exp_mean.coverage(),
@@ -431,19 +409,16 @@ with open(output_path, "w") as f:
             'num_valid_anchors': len(valid_anchors_mean),
             'main_applies': int(main_applies_mean),
             'num_valid_apply': num_valid_apply_mean,
-            'no_anchor_applies': int((not main_applies_mean) and (num_valid_apply_mean == 0)),
         })
 
         f.write("-" * 80 + "\n\n")
 
     # ---------------------------------------------------------
-    # 10) GLOBAL STATISTICS
+    # 9) GLOBAL STATISTICS ACROSS ALL INSTANCES
     # ---------------------------------------------------------
     f.write("\n" + "=" * 100 + "\n")
-    f.write("GLOBAL STATISTICS ACROSS ALL (INSTANCE, TRUE_LABEL_EXCLUSION) PAIRS\n")
+    f.write("GLOBAL STATISTICS ACROSS ALL CONSIDERED INSTANCES\n")
     f.write("=" * 100 + "\n\n")
-
-    f.write(f"Number of instances with no neighbors' prediction sets excluding true label: {counter}\n")
 
     for mode in ['original', 'mean']:
         mode_results = [r for r in results if r['mode'] == mode]
@@ -456,12 +431,16 @@ with open(output_path, "w") as f:
         feats_values = [r['avg_feats_valid'] for r in mode_results]
         unique_feats_values = [r['num_unique_feats_valid'] for r in mode_results]
         valid_anchors_values = [r['num_valid_anchors'] for r in mode_results]
-        main_applies_values = [r['main_applies'] for r in mode_results]          
-        num_valid_apply_values = [r['num_valid_apply'] for r in mode_results]    
-        no_anchor_applies_values = [r['no_anchor_applies'] for r in mode_results]
-        count_no_anchor_applies = int(np.sum(no_anchor_applies_values))         
-        frac_no_anchor_applies = count_no_anchor_applies / len(mode_results)   
+        main_applies_values = [r['main_applies'] for r in mode_results]
+        num_valid_apply_values = [r['num_valid_apply'] for r in mode_results]
 
+        # How many instances have main anchor applying?
+        count_main_applies = int(np.sum(main_applies_values))
+        frac_main_applies = count_main_applies / len(mode_results)
+
+        # How many instances have at least one valid anchor applying?
+        count_at_least_one_valid = sum(1 for v in num_valid_apply_values if v > 0)
+        frac_at_least_one_valid = count_at_least_one_valid / len(mode_results)
 
         avg_cov, std_cov = np.mean(cov_values), np.std(cov_values)
         avg_prec, std_prec = np.mean(prec_values), np.std(prec_values)
@@ -469,8 +448,12 @@ with open(output_path, "w") as f:
         avg_feats_valid, std_feats_valid = np.mean(feats_values), np.std(feats_values)
         avg_unique_feats_valid, std_unique_feats_valid = np.mean(unique_feats_values), np.std(unique_feats_values)
         avg_num_valid_anchors, std_num_valid_anchors = np.mean(valid_anchors_values), np.std(valid_anchors_values)
-        frac_main_applying = np.mean(main_applies_values)         
-        avg_num_valid_apply = np.mean(num_valid_apply_values)     
+        # avg_cov = np.mean([r['main_coverage'] for r in mode_results])
+        # avg_prec = np.mean([r['main_precision'] for r in mode_results])
+        # avg_cum_cov = np.mean([r['cumulative_coverage'] for r in mode_results])
+        # avg_feats_valid = np.mean([r['avg_feats_valid'] for r in mode_results])
+        # avg_unique_feats_valid = np.mean([r['num_unique_feats_valid'] for r in mode_results])
+        # avg_num_valid_anchors = np.mean([r['num_valid_anchors'] for r in mode_results])
 
         f.write(f"MODE: {mode}\n")
         f.write(f"  Avg main precision: {avg_prec:.4f} (std={std_prec:.4f})\n")
@@ -479,18 +462,17 @@ with open(output_path, "w") as f:
         f.write(f"  Avg #features per valid anchor: {avg_feats_valid:.4f} (std={std_feats_valid:.4f})\n")
         f.write(f"  Avg #unique features per instance (valid anchors): {avg_unique_feats_valid:.4f} (std={std_unique_feats_valid:.4f})\n")
         f.write(f"  Avg #valid anchors per instance: {avg_num_valid_anchors:.4f} (std={std_num_valid_anchors:.4f})\n")
-        f.write(f"  Fraction of MAIN anchors applying to patient: {frac_main_applying:.4f}\n")
-        f.write(f"  Avg #valid anchors applying to patient: {avg_num_valid_apply:.4f}\n")
         f.write(
-            f"  #instances with NO anchors (main nor any valid) applying to patient: "
-            f"{count_no_anchor_applies} / {len(mode_results)}\n"
+            f"  #instances where MAIN anchor applies: "
+            f"{count_main_applies} / {len(mode_results)} "
+            f"({frac_main_applies:.4f})\n"
         )
         f.write(
-            f"  Fraction of instances with NO anchors applying: "
-            f"{frac_no_anchor_applies:.4f}\n"
+            f"  #instances with ≥1 valid anchor applying: "
+            f"{count_at_least_one_valid} / {len(mode_results)} "
+            f"({frac_at_least_one_valid:.4f})\n"
         )
         f.write("\n")
-
 end_time = time.time()
 total_time = end_time - start_time
 print(f"\nTotal runtime: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")

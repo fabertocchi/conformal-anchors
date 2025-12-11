@@ -506,8 +506,8 @@ class AnchorBaseBeam(object):
 
         # Expand anchors by one predicate at a time, up to max_anchor_size
         while current_size <= max_anchor_size:
-            print("----------------")
-            print("Current size:", current_size)
+            # print("----------------")
+            # print("Current size:", current_size)
             # Generate all candidate tuples of length 'current_size' by extending the best anchors of size 'current_size - 1'
             tuples = AnchorBaseBeam.make_tuples(
                 best_of_size[current_size - 1], state)
@@ -530,7 +530,7 @@ class AnchorBaseBeam(object):
                 sample_fns, initial_stats, epsilon, delta, batch_size,
                 min(beam_size, len(tuples)),
                 verbose=verbose, verbose_every=verbose_every)
-            print("chosen tuples:", chosen_tuples, "len chosen tuples:", len(chosen_tuples))
+            # print("chosen tuples:", chosen_tuples, "len chosen tuples:", len(chosen_tuples))
             # Keep the B-best rules of the current size for the next iteration
             best_of_size[current_size] = [tuples[x] for x in chosen_tuples]
             # print(f"Best of size {current_size}:", best_of_size[current_size])
@@ -539,7 +539,7 @@ class AnchorBaseBeam(object):
             
             stop_this = False
             for i, t in zip(chosen_tuples, best_of_size[current_size]):
-                print("Evaluating tuple:", i, t)
+                # print("Evaluating tuple:", i, t)
                 # I can choose at most (beam_size - 1) tuples at each step,
                 # and there are at most n_feature steps
                 # Compute confidence bounds for the candidate rule
@@ -566,8 +566,9 @@ class AnchorBaseBeam(object):
                 # print('%s mean = %.2f lb = %.2f ub = %.2f coverage: %.2f n: %d' % (t, mean, lb, ub, coverage, state['t_nsamples'][t]))
                 # If precision is confidently above the threshold => valid anchor
                 if mean >= desired_confidence and lb > desired_confidence - epsilon_stop:
-                    print("Found valid anchor:", t, "precision:", mean, "lb:", lb, "coverage:", coverage)
-                    valid_anchors_list.append(t)
+                    if coverage > 0:
+                        #print("Found valid anchor:", t, "precision:", mean, "lb:", lb, "coverage:", coverage)
+                        valid_anchors_list.append(t)
                     # print('Found eligible anchor ', t, 'Coverage:',
                               # coverage, 'Is best?', coverage > best_coverage)
                     # Choose the anchor with highest coverage among valid ones
@@ -586,8 +587,8 @@ class AnchorBaseBeam(object):
         if best_tuple == ():
             # Could not find an anchor, will now choose the highest precision
             # amongst the top K from every round
-            if verbose:
-                print('Could not find an anchor, now doing best of each size')
+            #if verbose:
+            print('Could not find an anchor, now doing best of each size')
             tuples = []
             for i in range(0, current_size):
                 tuples.extend(best_of_size[i])
@@ -602,7 +603,7 @@ class AnchorBaseBeam(object):
                 sample_fns, initial_stats, epsilon, delta, batch_size,
                 1, verbose=verbose)
             best_tuple = tuples[chosen_tuples[0]]
-        # print("Best tuple:", best_tuple)
+            print("Best tuple:", best_tuple)
 
     
         print("---> valid anchors found:", len(valid_anchors_list), valid_anchors_list)
@@ -621,7 +622,7 @@ class AnchorBaseBeam(object):
         best_anchor['cumulative_coverage'] = cumulative_coverage
 
 
-        print("Cumulative coverage of all valid anchors:", cumulative_coverage)
+        # print("Cumulative coverage of all valid anchors:", cumulative_coverage)
 
         # Return the final anchor as a readable structure
         return best_anchor, valid_anchors_dict

@@ -465,7 +465,7 @@ if __name__ == "__main__":
 
     # Version 2: using TESTS from tests_v2
     df = generate_patient_data()
-    df.to_csv('synthetic_patient_basic_setting_v2.csv', index=False)
+    df.to_csv('generated_datasets/synthetic_patient_basic_setting_v2.csv', index=False)
     
     # Display basic info
     print("\nDataset shape:", df.shape)

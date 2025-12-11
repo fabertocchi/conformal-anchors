@@ -126,7 +126,7 @@ all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
 # --- number of test instances to use ---
 n_instances = 100               # <-- change if you want more
 n_instances = min(n_instances, len(X_test))   # safety
-beam_size = 20
+beam_size = 1
 
 # Choose which test indices to use (random without replacement)
 selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
@@ -134,7 +134,7 @@ selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=
 # To store per-(instance, mode) stats
 results = []
 
-output_path = "anchor_experiment_true_label_exclusion_ALL_neighbors_20_with_applicability.txt"
+output_path = "anchor_experiment_true_label_exclusion_ALL_neighbors_1_with_applicability.txt"
 
 with open(output_path, "w") as f:
     f.write("EXPERIMENT: exclude TRUE label, using ALL neighbors\n")

@@ -17,8 +17,12 @@ xgb_cl.load_model("xgb_model.json")
 # Get class names
 class_names = xgb_cl.classes_
 
+generic_symptoms_cols = ['fever_severity', 'cough_severity', 'chest_pain_severity', 
+    'abdominal_pain_severity', 'fatigue_level', 'nausea']
+
+
 # Select a new patient from the test set
-new_patient_idx = 1097
+new_patient_idx = 10510#9283
 new_patient = X_test.iloc[new_patient_idx]
 print(f"---- NEW PATIENT {new_patient_idx} (from test set)----")
 print("New patient:\n", new_patient)
@@ -32,7 +36,6 @@ print("-" * 80)
 all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(X_test, X_anchors, y_anchors, k=100)
 subset_new_patient = all_subsets[new_patient_idx]
 y_subset_new_patient = y_subsets[new_patient_idx]
-print("Subset for new patient:\n", subset_new_patient)
 
 # Compute raw (non-binned) versions of the neighbors in the subset
 subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
@@ -73,12 +76,13 @@ if new_patient_true_label in labels_stomach:
 elif new_patient_true_label in labels_lung:
     possible_labels = [i for i in labels_lung if i != new_patient_true_label]
     label_to_exclude = np.random.choice(possible_labels)
-#label_to_exclude = 6
+# label_to_exclude = 7 #new_patient_true_label
 
 print("Class to exclude", label_to_exclude, "corresponding to", categories[label_to_exclude])
 
 pred_sets_names = [list(class_names[mask]) for mask in prediction_sets]
-# print(pred_sets_names)
+#print(pred_sets_names[new_patient_idx])
+print("Full prediction sets:", pred_sets_names)
 
 pred_set_without_target = {}
 for i, pred_set in enumerate(pred_sets_names):
@@ -90,6 +94,11 @@ print(pred_set_without_target)
 
 idx_example_to_anchor = np.random.choice(list(pred_set_without_target.keys()))
 anchor_instance = subset_new_patient.iloc[idx_example_to_anchor].to_numpy()
+
+anchor_row = subset_new_patient.iloc[idx_example_to_anchor].copy()
+anchor_row[generic_symptoms_cols] = new_patient[generic_symptoms_cols].values
+anchor_instance = anchor_row.to_numpy()
+
 print(f"Use example {idx_example_to_anchor}, which is\n {anchor_instance}")
 print("True label of anchor instance:", y_subset_new_patient.iloc[idx_example_to_anchor])
 print("Predicted label of anchor instance:", xgb_cl.predict(anchor_instance.reshape(1, -1))[0])
@@ -125,6 +134,7 @@ for label in unique_labels:
     mask = (neighbors_labels == label)
     cluster = neighbors_excluding_target_raw[mask]
     mean_instances_raw.append(cluster.mean(axis=0))
+    print("Label", label, "num instances:", len(cluster))
 
 mean_instances_raw = np.vstack(mean_instances_raw)
 print("Mean instances (raw):", mean_instances_raw)
@@ -144,93 +154,131 @@ mean_instances_binned_df = bin_dataset(
     verbose=False
 )
 
-print("Mean instances (binned):", mean_instances_binned_df.to_numpy())
+mean_instances_binned_df[generic_symptoms_cols] = (
+    new_patient[generic_symptoms_cols].values
+)
+print("mean instances predictions",xgb_cl.predict(mean_instances_binned_df.to_numpy()))
+print("Mean instances (binned, with symptoms from new patient):")
+print(mean_instances_binned_df)
 
-# beam_size = 10
-# # Explain the anchor instance using "original" predicate mode
-# exp_original = explainer.explain_instance(anchor_instance, xgb_cl, mode="conformal",
-#                                  query_label=label_to_exclude, qhat=qhat, 
-#                                  threshold=0.95, delta=0.1, tau=0.15, beam_size=beam_size, predicate_mode="original")
+beam_size = 10
+#np.random.seed(1)
+# Explain the anchor instance using "original" predicate mode
+exp_original, valid_anchors_original = explainer.explain_instance(anchor_instance, xgb_cl, mode="conformal",
+                                 query_label=label_to_exclude, qhat=qhat, 
+                                 threshold=0.95, delta=0.1, tau=0.15, beam_size=beam_size, predicate_mode="original")
 
-# print('Anchor: %s' % (' AND '.join(exp_original.names())))
-# print('Precision: %.3f' % exp_original.precision())
-# print('Coverage: %.5f' % exp_original.coverage())
+print('Anchor: %s' % (' AND '.join(exp_original.names())))
+print('Precision: %.3f' % exp_original.precision())
+print('Coverage: %.5f' % exp_original.coverage())
+print('Cumulative coverage: %.5f' % exp_original.cumulative_coverage())
 
-# print("-" * 80)
-# # Explain using MEAN INSTANCES mode
-# exp_mean = explainer.explain_instance(
-#     anchor_instance, 
-#     xgb_cl, 
-#     mode="conformal",
-#     query_label=label_to_exclude, 
-#     qhat=qhat, 
-#     threshold=0.95, 
-#     delta=0.1, 
-#     tau=0.15,
-#     beam_size=beam_size,
-#     predicate_mode="mean_instances",    
-#     mean_instances=mean_instances_binned_df.to_numpy()
-# )
+print("\nAll valid anchors:")
+sorted_valid_anchors_original = sorted(
+    valid_anchors_original,
+    key=lambda va: va['coverage'][-1],   # use last coverage value
+    reverse=True                         # highest coverage first
+)
 
-# print('Anchor: %s' % (' AND '.join(exp_mean.names())))
-# print('Precision: %.3f' % exp_mean.precision())
-# print('Coverage: %.5f' % exp_mean.coverage())
+for i, va in enumerate(sorted_valid_anchors_original, 1):
+    names = " AND ".join(va['names'])
+    prec = va['precision'][-1]
+    cov = va['coverage'][-1]
+    print(f"{i}) {names}  |  precision={prec:.3f}, coverage={cov:.5f}")
 
-# print("-" * 80)
-# print("Comparison:")
-# print(f"Original mode: {len(exp_original.names())} predicates")
-# print('Anchor: %s' % (' AND '.join(exp_original.names())))
-# print('Coverage: %.5f' % exp_original.coverage())
-# print(f"Mean instances mode: {len(exp_mean.names())} predicates")
-# print('Anchor: %s' % (' AND '.join(exp_mean.names())))
-# print('Coverage: %.5f' % exp_mean.coverage())
 
-# Beam sizes to test
-beam_sizes = [1, 3, 5, 7, 10, 15, 20, 25, 30]
+print("-" * 80)
+#np.random.seed(1)
+# Explain using MEAN INSTANCES mode
+exp_mean, valid_anchors_mean = explainer.explain_instance(
+    anchor_instance, 
+    xgb_cl, 
+    mode="conformal",
+    query_label=label_to_exclude, 
+    qhat=qhat, 
+    threshold=0.95, 
+    delta=0.1, 
+    tau=0.15,
+    beam_size=beam_size,
+    predicate_mode="mean_instances",    
+    mean_instances=mean_instances_binned_df.to_numpy()
+)
 
-# Lists to store results
-coverages_original = []
-coverages_mean = []
+print('Anchor: %s' % (' AND '.join(exp_mean.names())))
+print('Precision: %.3f' % exp_mean.precision())
+print('Coverage: %.5f' % exp_mean.coverage())
+print('Cumulative coverage: %.5f' % exp_mean.cumulative_coverage())
 
-for b in beam_sizes:
-    print("=" * 80)
-    print(f"Running with beam_size = {b}")
+print("\nAll valid anchors:")
+sorted_valid_anchors_mean = sorted(
+    valid_anchors_mean,
+    key=lambda va: va['coverage'][-1],   # use last coverage value
+    reverse=True                         # highest coverage first
+)
+for i, va in enumerate(sorted_valid_anchors_mean, 1):
+    names = " AND ".join(va['names'])
+    prec = va['precision'][-1]
+    cov = va['coverage'][-1]
+    print(f"{i}) {names}  |  precision={prec:.3f}, coverage={cov:.5f}")
+
+
+print("-" * 80)
+print("Comparison:")
+print(f"Original mode: {len(exp_original.names())} predicates")
+print('Anchor: %s' % (' AND '.join(exp_original.names())))
+print('Coverage: %.5f' % exp_original.coverage())
+print('Cumulative coverage: %.5f' % exp_original.cumulative_coverage())
+print(f"Mean instances mode: {len(exp_mean.names())} predicates")
+print('Anchor: %s' % (' AND '.join(exp_mean.names())))
+print('Coverage: %.5f' % exp_mean.coverage())
+print("Cumulative coverage: %.5f\n" % exp_mean.cumulative_coverage())
+
+# # Beam sizes to test
+# beam_sizes = [1, 3, 5, 7, 10, 15, 20, 25, 30]
+
+# # Lists to store results
+# coverages_original = []
+# coverages_mean = []
+
+# for b in beam_sizes:
+#     print("=" * 80)
+#     print(f"Running with beam_size = {b}")
     
-    # ORIGINAL mode
-    exp_orig = explainer.explain_instance(
-        anchor_instance, xgb_cl, mode="conformal",
-        query_label=label_to_exclude, qhat=qhat,
-        threshold=0.95, delta=0.1, tau=0.15, beam_size=b,
-        predicate_mode="original"
-    )
-    cov_orig = exp_orig.coverage()
-    coverages_original.append(cov_orig)
-    print('Original mode anchor: %s' % (' AND '.join(exp_orig.names())))
-    print(f"Original mode coverage (beam={b}): {cov_orig:.5f}")
+#     # ORIGINAL mode
+#     exp_orig = explainer.explain_instance(
+#         anchor_instance, xgb_cl, mode="conformal",
+#         query_label=label_to_exclude, qhat=qhat,
+#         threshold=0.95, delta=0.1, tau=0.15, beam_size=b,
+#         predicate_mode="original"
+#     )
+#     cov_orig = exp_orig.coverage()
+#     coverages_original.append(cov_orig)
+#     print('Original mode anchor: %s' % (' AND '.join(exp_orig.names())))
+#     print(f"Original mode coverage (beam={b}): {cov_orig:.5f}")
 
-    # MEAN INSTANCES mode
-    exp_mean = explainer.explain_instance(
-        anchor_instance, xgb_cl, mode="conformal",
-        query_label=label_to_exclude, qhat=qhat,
-        threshold=0.95, delta=0.1, tau=0.15, beam_size=b,
-        predicate_mode="mean_instances",
-        mean_instances=mean_instances_binned_df.to_numpy()
-        )
-    cov_mean = exp_mean.coverage()
-    coverages_mean.append(cov_mean)
-    print('Mean-instances mode anchor: %s' % (' AND '.join(exp_mean.names())))
-    print(f"Mean-instances mode coverage (beam={b}): {cov_mean:.5f}")
+#     # MEAN INSTANCES mode
+#     exp_mean = explainer.explain_instance(
+#         anchor_instance, xgb_cl, mode="conformal",
+#         query_label=label_to_exclude, qhat=qhat,
+#         threshold=0.95, delta=0.1, tau=0.15, beam_size=b,
+#         predicate_mode="mean_instances",
+#         mean_instances=mean_instances_binned_df.to_numpy()
+#         )
+#     cov_mean = exp_mean.coverage()
+#     coverages_mean.append(cov_mean)
+#     print('Mean-instances mode anchor: %s' % (' AND '.join(exp_mean.names())))
+#     print(f"Mean-instances mode coverage (beam={b}): {cov_mean:.5f}")
 
-# ---- Plot results ----
-plt.figure(figsize=(7,5))
-plt.plot(beam_sizes, coverages_original, marker='o', label='Original mode')
-plt.plot(beam_sizes, coverages_mean, marker='s', label='Mean-instances mode')
-plt.xlabel('Beam size')
-plt.ylabel('Coverage')
-plt.title('Coverage vs Beam size')
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.6)
-plt.ylim(0, 1)
-plt.tight_layout()
-plt.show()
+# # ---- Plot results ----
+# plt.figure(figsize=(7,5))
+# plt.plot(beam_sizes, coverages_original, marker='o', label='Original mode')
+# plt.plot(beam_sizes, coverages_mean, marker='s', label='Mean-instances mode')
+# plt.xlabel('Beam size')
+# plt.ylabel('Coverage')
+# plt.title('Coverage vs Beam size')
+# plt.legend()
+# plt.grid(True, linestyle='--', alpha=0.6)
+# plt.ylim(0, 1)
+# plt.tight_layout()
+# plt.show()
 
