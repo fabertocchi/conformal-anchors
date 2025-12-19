@@ -403,7 +403,7 @@ class AnchorTabularExplainer(object):
                 unique_mapping[len(unique_mapping)] = (f, op, v)
         mapping = unique_mapping
 
-        # print("mapping", mapping)
+        print("mapping", mapping)
         if verbose:
             print(f"Generated {len(mapping)} unique predicates from {len(mean_instances)} mean instances")
         

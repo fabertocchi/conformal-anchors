@@ -220,3 +220,10 @@ __marimo__/
 
 # Proposals
 PROPOSALS/
+
+anchor_experiment_*
+esempi
+two_pass_*
+prova.py
+debugging*.py
+kernel-based non-parametric*

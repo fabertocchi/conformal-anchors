@@ -197,6 +197,7 @@ class AnchorBaseBeam(object):
         
         # When bounds are sufficiently separated, return the top_n arms with largest means
         sorted_means = np.argsort(means)
+        print("means", sorted_means[-top_n:])
         return sorted_means[-top_n:]
 
     @staticmethod
@@ -511,11 +512,13 @@ class AnchorBaseBeam(object):
             # Generate all candidate tuples of length 'current_size' by extending the best anchors of size 'current_size - 1'
             tuples = AnchorBaseBeam.make_tuples(
                 best_of_size[current_size - 1], state)
+            print("All tuples of size", current_size, ":", tuples, "len tuples:", len(tuples))
             # print("tuples before filtering:", tuples)
             # Filter out tuples with coverage less than the best found so far
+    
             tuples = [x for x in tuples
                       if state['t_coverage'][x] > best_coverage]
-            # print("Filtered tuples:", tuples)
+            print("Filtered tuples:", tuples)
             if len(tuples) == 0:
                 print("no valid tuples found")
                 break
@@ -530,7 +533,7 @@ class AnchorBaseBeam(object):
                 sample_fns, initial_stats, epsilon, delta, batch_size,
                 min(beam_size, len(tuples)),
                 verbose=verbose, verbose_every=verbose_every)
-            # print("chosen tuples:", chosen_tuples, "len chosen tuples:", len(chosen_tuples))
+            print("chosen tuples:", chosen_tuples, "len chosen tuples:", len(chosen_tuples))
             # Keep the B-best rules of the current size for the next iteration
             best_of_size[current_size] = [tuples[x] for x in chosen_tuples]
             # print(f"Best of size {current_size}:", best_of_size[current_size])
@@ -539,7 +542,7 @@ class AnchorBaseBeam(object):
             
             stop_this = False
             for i, t in zip(chosen_tuples, best_of_size[current_size]):
-                # print("Evaluating tuple:", i, t)
+                print("Evaluating tuple:", i, t)
                 # I can choose at most (beam_size - 1) tuples at each step,
                 # and there are at most n_feature steps
                 # Compute confidence bounds for the candidate rule
@@ -550,6 +553,13 @@ class AnchorBaseBeam(object):
                 ub = AnchorBaseBeam.dup_bernoulli(
                     mean, beta / state['t_nsamples'][t])
                 coverage = state['t_coverage'][t]
+
+                print(
+                    f"[SIZE {current_size}] candidate={t} | "
+                    f"cov={coverage:.6f} | mean={mean:.4f} | lb={lb:.4f} | ub={ub:.4f} | "
+                    f"n={int(state['t_nsamples'][t])}"
+                )
+
 
                 # print("chosen tuple:", i, "precision:", mean, "lb:", lb, "ub:", ub)
                 # Keep sampling until the confidence interval is sufficiently tight
@@ -562,6 +572,13 @@ class AnchorBaseBeam(object):
                         mean, beta / state['t_nsamples'][t])
                     ub = AnchorBaseBeam.dup_bernoulli(
                         mean, beta / state['t_nsamples'][t])
+                    
+                print(
+                    f"[SIZE {current_size}] final  ={t} | "
+                    f"cov={coverage:.6f} | mean={mean:.4f} | lb={lb:.4f} | ub={ub:.4f} | "
+                    f"n={int(state['t_nsamples'][t])}"
+                )
+
                 
                 # print('%s mean = %.2f lb = %.2f ub = %.2f coverage: %.2f n: %d' % (t, mean, lb, ub, coverage, state['t_nsamples'][t]))
                 # If precision is confidently above the threshold => valid anchor

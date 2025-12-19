@@ -40,6 +40,22 @@ def get_test_bin_edges(TESTS):
 
     return bins
 
+def get_test_bin_labels(TESTS):
+    """
+    Returns:
+      dict: test_name -> sorted list of unique bin labels (midpoints)
+    """
+    test_bin_edges = get_test_bin_edges(TESTS)
+    bin_labels = {}
+
+    for test_name, edges in test_bin_edges.items():
+        labels = [(low + high) * 0.5 for (low, high) in edges]
+        bin_labels[test_name] = sorted(set(labels))
+
+    return bin_labels
+
+TEST_BIN_LABELS = get_test_bin_labels(TESTS)
+
 def bin_dataset(df, TESTS, generic_symptoms_cols=None, verbose=False):
     """
     Create a binned version of the dataset according to:
@@ -134,7 +150,9 @@ if __name__ == "__main__":
     df_v2_binned = bin_dataset(df_v2, TESTS, generic_symptoms_cols=generic_symptoms_cols, verbose=True)
     # Check the result
     print(df_v2_binned.head())
+    # Print the unique values for each binned test column
+    print(TEST_BIN_LABELS)
 
     # Save the binned version of the dataset
     df_v2_binned.to_csv("generated_datasets/synthetic_patient_basic_setting_v2_binned.csv", index=False)
-
+    

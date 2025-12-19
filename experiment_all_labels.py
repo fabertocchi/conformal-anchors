@@ -45,11 +45,11 @@ all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
 # --- we only want 5 test instances ---
 n_instances = 5
 n_instances = min(n_instances, len(X_test))   # safety
-beam_size = 25
+beam_size = 15
 
 # Choose which test indices to use (here: random without replacement)
-selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
-
+#selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
+selected_test_indices = [10510]
 # To store per-(instance, label, mode) stats
 results = []
 
@@ -65,6 +65,7 @@ with open(output_path, "w") as f:
     labels_lung = [0, 2, 3, 4, 9]
 
     for run_id, new_patient_idx in enumerate(selected_test_indices, 1):
+        print(f"Running instance {run_id}/{n_instances} (test index = {new_patient_idx})")
         f.write(f"### INSTANCE {run_id}/{n_instances}  (test index = {new_patient_idx})\n")
         f.write("-" * 80 + "\n")
 
@@ -82,28 +83,28 @@ with open(output_path, "w") as f:
         subset_new_patient = all_subsets[new_patient_idx]
         y_subset_new_patient = y_subsets[new_patient_idx]
 
-        if new_patient_idx == 10510:
-            X_test_cf = X_test.copy()
+        # if new_patient_idx == 10510:
+        #     X_test_cf = X_test.copy()
 
-            row_pos = new_patient_idx
+        #     row_pos = new_patient_idx
 
-            # Get column positions
-            cough_col = X_test_cf.columns.get_loc('cough_severity')
-            chest_col = X_test_cf.columns.get_loc('chest_pain_severity')
+        #     # Get column positions
+        #     cough_col = X_test_cf.columns.get_loc('cough_severity')
+        #     chest_col = X_test_cf.columns.get_loc('chest_pain_severity')
 
-            # Assign using iloc (positional)
-            X_test_cf.iloc[row_pos, cough_col] = 1
-            X_test_cf.iloc[row_pos, chest_col] = 0
+        #     # Assign using iloc (positional)
+        #     X_test_cf.iloc[row_pos, cough_col] = 1
+        #     X_test_cf.iloc[row_pos, chest_col] = 0
 
-            # Now this will see the changed values
-            new_patient_imputed = X_test_cf.iloc[row_pos]
-            print("Imputed new patient:\n", new_patient_imputed[['cough_severity', 'chest_pain_severity']])
+        #     # Now this will see the changed values
+        #     new_patient_imputed = X_test_cf.iloc[row_pos]
+        #     print("Imputed new patient:\n", new_patient_imputed[['cough_severity', 'chest_pain_severity']])
 
-            f.write(f"Imputed new patient:\n{new_patient_imputed}\n")
+        #     f.write(f"Imputed new patient:\n{new_patient_imputed}\n")
 
-            all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(X_test_cf, X_anchors, y_anchors, k=100)
-            subset_new_patient = all_subsets[new_patient_idx]
-            y_subset_new_patient = y_subsets[new_patient_idx]
+        #     all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(X_test_cf, X_anchors, y_anchors, k=100)
+        #     subset_new_patient = all_subsets[new_patient_idx]
+        #     y_subset_new_patient = y_subsets[new_patient_idx]
 
 
 
@@ -140,8 +141,8 @@ with open(output_path, "w") as f:
             # Fallback: all labels except the true one
             group_labels = [int(l) for l in class_names if int(l) != int(new_patient_true_label)]
 
-        labels_to_exclude = [l for l in group_labels if l != new_patient_true_label]
-
+        #labels_to_exclude = [l for l in group_labels if l != new_patient_true_label]
+        labels_to_exclude = [1]
         f.write(f"Labels considered for exclusion (same group): {labels_to_exclude}\n\n")
 
         # Precompute prediction set names once (independent of label_to_exclude)
@@ -188,6 +189,11 @@ with open(output_path, "w") as f:
             # 5) MEAN INSTANCES (for mean-instances mode)
             # -----------------------------
             unique_labels = np.unique(neighbors_labels)
+            print("unique labels", unique_labels, len(unique_labels))
+            print("Labels:", neighbors_labels.values)
+            neighbor_counts = neighbors_labels.value_counts().sort_index()
+            for lab, cnt in neighbor_counts.items():
+                print(f"  label {int(lab)} ({categories[int(lab)]}): {int(cnt)}")
             mean_instances_raw = []
             for label in unique_labels:
                 mask = (neighbors_labels == label)

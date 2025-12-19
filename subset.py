@@ -5,6 +5,7 @@ import numpy as np
 import xgboost as xgb
 from sklearn.metrics import accuracy_score
 from prediction_set import compute_conformal_threshold, construct_prediction_sets
+from binning import TEST_BIN_LABELS
 
 """Use k-NN with Gower similarity to select similar instances in anchor set for each test sample."""
 
@@ -33,10 +34,80 @@ def gower_similarity(anchor_vectors, test_vector, feature_range = (0, 10)):
     valid_mask = ~np.isnan(diff)
     
     # Compute Gower distance per anchor instance and convert to similarity
-    distances = np.sum(diff / R * valid_mask, axis=1) / np.sum(valid_mask, axis=1)      # True acts as 1, False as 0 → effectively counts valid features only
+    #distances = np.sum(diff / R * valid_mask, axis=1) / np.sum(valid_mask, axis=1)      # True acts as 1, False as 0 → effectively counts valid features only
+    den = np.sum(valid_mask, axis=1)
+    distances = np.where(den > 0, np.sum(diff / R * valid_mask, axis=1) / den, 1.0)
     similarities = 1 - distances
     
     return similarities
+
+def gower_similarity_mixed(anchor_vectors,
+                           test_vector,
+                           feature_names,
+                           BIN_LEVELS,
+                           symptom_cols,
+                           symptom_range=(0, 10)):
+    """
+    Mixed Gower similarity:
+      - symptom_cols: treated as numeric with fixed range (default 0-10)
+      - all other features: treated as ordinal-binned using BIN_LEVELS (distance by bin index)
+
+    Missing rule: a feature contributes only if BOTH anchor and test are not NaN.
+    """
+    A = np.asarray(anchor_vectors, dtype=float)   # (n_anchors, n_features)
+    t = np.asarray(test_vector, dtype=float)      # (n_features,)
+
+    n_anchors, n_features = A.shape
+
+    # Output-coded arrays (we will overwrite only ordinal features)
+    A_code = A.copy()
+    t_code = t.copy()
+
+    # Per-feature ranges
+    ranges = np.ones(n_features, dtype=float)
+
+    sym_R = float(symptom_range[1] - symptom_range[0])
+
+    for j, fname in enumerate(feature_names):
+        if fname in symptom_cols:
+            # ORIGINAL behavior for symptoms: numeric in [0,10]
+            ranges[j] = sym_R #if sym_R > 0 else 1.0
+            continue
+
+        # Binned/ordinal feature
+        levels = BIN_LEVELS.get(fname, None)
+        if levels is None:
+            raise KeyError(f"Feature '{fname}' not found in BIN_LEVELS (needed for ordinal handling).")
+
+        # map level -> ordinal index
+        # (float conversion avoids dtype mismatches like 10 vs 10.0)
+        level_to_idx = {float(v): i for i, v in enumerate(levels)}
+        L = len(levels)
+        ranges[j] = max(L - 1, 1)
+
+        # Convert anchor column to codes
+        col = A_code[:, j]
+        for i in range(n_anchors):
+            v = col[i]
+            if np.isnan(v):
+                continue
+            col[i] = level_to_idx.get(float(v), np.nan)  # unknown -> NaN
+        A_code[:, j] = col
+
+        # Convert test value to code
+        if not np.isnan(t_code[j]):
+            t_code[j] = level_to_idx.get(float(t_code[j]), np.nan)
+
+    # Gower distance on mixed-coded features
+    diff = np.abs(A_code - t_code)
+
+    valid_mask = (~np.isnan(A_code)) & (~np.isnan(t_code))
+    norm_diff = (diff / ranges) * valid_mask
+
+    den = np.sum(valid_mask, axis=1)
+    distances = np.where(den > 0, np.sum(norm_diff, axis=1) / den, 1.0)
+
+    return 1.0 - distances
 
 def get_knn_subsets(X_test, X_anchors, y_anchors, k=25):
     """
@@ -68,7 +139,7 @@ def get_knn_subsets(X_test, X_anchors, y_anchors, k=25):
         similarities = gower_similarity(anchor_vectors, test_vector, (0, 10))
 
         # Identify indices of the k most similar anchors (sorted descending by similarity)
-        k_nearest_indices = np.argsort(-similarities)[:k]  
+        k_nearest_indices = np.argsort(-similarities, kind='mergesort')[:k]  
         k_nearest_indices_list.append(k_nearest_indices)
 
         # Retrieve the corresponding feature rows and labels
@@ -104,6 +175,35 @@ def compute_subset_accuracies(model, all_subsets, y_subsets):
 
     return accuracies, y_preds_subsets
 
+def get_knn_subsets_dynamic(X_test, X_anchors, y_anchors, k=25, anchor_features=None):
+    if anchor_features is None:
+        anchor_features = []
+    cols_to_compare = list(set(SYMPTOMS_NAMES + anchor_features))
+    print(cols_to_compare)
+    all_subsets, y_subsets, similarities_list, k_nearest_indices_list = [], [], [], []
+
+    for test_idx in range(len(X_test)):
+        # Use the chosen feature space (not only symptoms)
+        test_instance = X_test.iloc[test_idx][cols_to_compare]
+        valid_feats = test_instance.index[test_instance.notna()]
+
+        test_vector = test_instance[valid_feats].values
+        anchor_vectors = X_anchors[valid_feats].values
+
+        similarities = gower_similarity_mixed(anchor_vectors, test_vector, feature_names=valid_feats, BIN_LEVELS=TEST_BIN_LABELS, symptom_cols=SYMPTOMS_NAMES, symptom_range=(0,10))
+
+        k_nearest_indices = np.argsort(-similarities, kind='mergesort')[:k]
+        k_nearest_indices_list.append(k_nearest_indices)
+
+        subset_df = X_anchors.iloc[k_nearest_indices].reset_index(drop=True)
+        y_subset_df = y_anchors.iloc[k_nearest_indices].reset_index(drop=True)
+
+        all_subsets.append(subset_df)
+        y_subsets.append(y_subset_df)
+        similarities_list.append(similarities[k_nearest_indices])
+
+    return all_subsets, y_subsets, similarities_list, k_nearest_indices_list
+
 
 if __name__ == "__main__":
     
@@ -111,7 +211,7 @@ if __name__ == "__main__":
 
     # Compute k-nearest subsets for each test instance
     all_subsets, y_subsets, similarities_list, k_nearest_indices = get_knn_subsets(X_test, X_anchors, y_anchors, k=k)
-
+    all_subsets_dynamic, y_subsets_dynamic, similarities_list_dynamic, k_nearest_indices_dynamic = get_knn_subsets_dynamic(X_test, X_anchors, y_anchors, k=k, anchor_features=['hemoglobin', 'endoscopy_score'])
     # Load trained XGBoost model
     xgb_cl = xgb.XGBClassifier()
     xgb_cl.load_model("xgb_model.json")
@@ -125,7 +225,9 @@ if __name__ == "__main__":
     print("Test instance:", test_idx, X_test.iloc[test_idx], "\n")
     print("\nSubset of test instance", test_idx, ":\n")
     print(all_subsets[test_idx])
+    print(all_subsets_dynamic[test_idx])
     print("Similarities:\n", similarities_list[test_idx])
+    print("Similarities dynamic:\n", similarities_list_dynamic[test_idx])
 
     # Construct and visualize prediction sets for first test instance
     alpha = 0.01
