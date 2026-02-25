@@ -220,4 +220,5 @@ if __name__ == "__main__":
     ax.set_xticks(np.arange(len(class_names)))
 
     plt.tight_layout()
+    plt.savefig("conformal_prediction_sets_example.pdf")
     plt.show()
