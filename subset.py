@@ -1,4 +1,4 @@
-from model_training import X_train, y_train, X_conf_pred, y_conf_pred, X_anchors, y_anchors, X_test, y_test
+from model_training import X_train, y_train, X_conf_pred, y_conf_pred, X_anchors, y_anchors, X_test, y_test, X_test_orig, X_anchors_orig, y_anchors_orig
 from dataset_basic_setting import SYMPTOMS_NAMES
 import pandas as pd
 import numpy as np
@@ -6,6 +6,7 @@ import xgboost as xgb
 from sklearn.metrics import accuracy_score
 from prediction_set import compute_conformal_threshold, construct_prediction_sets
 from binning import TEST_BIN_LABELS
+from dataset_basic_setting import TEST_BOUNDS
 
 """Use k-NN with Gower similarity to select similar instances in anchor set for each test sample."""
 
@@ -102,12 +103,81 @@ def gower_similarity_mixed(anchor_vectors,
     diff = np.abs(A_code - t_code)
 
     valid_mask = (~np.isnan(A_code)) & (~np.isnan(t_code))
-    norm_diff = (diff / ranges) * valid_mask
+    #norm_diff = (diff / ranges) * valid_mask
+    norm_diff = np.where(valid_mask, diff / ranges, 0.0)
+
 
     den = np.sum(valid_mask, axis=1)
     distances = np.where(den > 0, np.sum(norm_diff, axis=1) / den, 1.0)
 
     return 1.0 - distances
+
+def gower_similarity_mixed_raw(anchor_vectors, test_vector, feature_names, symptom_cols, TEST_BOUNDS, feature_range=(0, 10), debug=False):
+    """
+    Compute Gower similarity between each row of anchor_vectors and a single test_vector.
+    Handles RAW data with per-feature ranges:
+      - symptom_cols: numeric with fixed range feature_range (default 0-10)
+      - test columns in TEST_BOUNDS: numeric with range (hi - lo)
+
+    Missing rule: a feature contributes only if BOTH anchor and test are not NaN.
+    """
+    min_val, max_val = feature_range
+    R_sym = float(max_val - min_val)
+
+    A = np.asarray(anchor_vectors, dtype=float)   # (n_anchors, n_features)
+    t = np.asarray(test_vector, dtype=float)      # (n_features,)
+
+    # Compute absolute feature-wise differences
+    diff = np.abs(A - t)
+
+    # Valid only if BOTH not NaN (anchor and test)
+    valid_mask = (~np.isnan(A)) & (~np.isnan(t))
+
+    # Per-feature ranges (default 1.0 to avoid div-by-zero if something is missing)
+    ranges = np.ones(A.shape[1], dtype=float)
+    # print("Feature names:", feature_names)
+    for j, fname in enumerate(feature_names):
+        if fname in symptom_cols:
+            ranges[j] = R_sym if R_sym > 0 else 1.0
+        elif fname in TEST_BOUNDS:
+            lo, hi = TEST_BOUNDS[fname]
+            r = float(hi - lo)
+            ranges[j] = r if r > 0 else 1.0
+        else:
+            # If you have other raw numeric features, add them to TEST_BOUNDS (recommended).
+            # Otherwise they will be normalized by 1.0 (i.e., not scaled).
+            ranges[j] = 1.0
+    # print("ranges:", ranges)
+
+    # Compute Gower distance per anchor instance and convert to similarity
+    den = np.sum(valid_mask, axis=1)
+    n_zero_den = np.sum(den == 0)
+    if n_zero_den > 0:
+        print(f"[DEBUG] den == 0 for {n_zero_den} / {len(den)} anchors")
+    if debug:
+        zero_den_idx = np.where(den == 0)[0]
+
+        if len(zero_den_idx) > 0:
+            print(f"\n[DEBUG] Found {len(zero_den_idx)} anchors with den == 0")
+
+            # Print only first few to avoid flooding
+            for i in zero_den_idx[:5]:
+                print("\n--- Anchor index:", i)
+                print("Features compared:", feature_names)
+                print("Test vector:")
+                print(pd.Series(test_vector, index=feature_names))
+
+                print("Anchor vector:")
+                print(pd.Series(anchor_vectors[i], index=feature_names))
+
+                print("Valid mask:")
+                print(pd.Series(valid_mask[i], index=feature_names))
+
+    norm_diff = np.where(valid_mask, diff / ranges, 0.0)
+    distances = np.where(den > 0, np.sum(norm_diff, axis=1) / den, 1.0)
+    similarities = 1 - distances
+
+    return similarities
 
 def get_knn_subsets(X_test, X_anchors, y_anchors, k=25):
     """
@@ -204,14 +274,65 @@ def get_knn_subsets_dynamic(X_test, X_anchors, y_anchors, k=25, anchor_features=
 
     return all_subsets, y_subsets, similarities_list, k_nearest_indices_list
 
+def get_knn_subsets_dynamic_raw(X_test, X_anchors, y_anchors,
+                                k=25, anchor_features=None,
+                                symptom_cols=None,
+                                TEST_BOUNDS=None,
+                                symptom_range=(0, 10)):
+    if anchor_features is None:
+        anchor_features = []
+    if symptom_cols is None:
+        symptom_cols = SYMPTOMS_NAMES
+    if TEST_BOUNDS is None:
+        raise ValueError("TEST_BOUNDS must be provided for RAW Gower.")
+
+    cols_to_compare = list(set(symptom_cols + anchor_features))
+    print(cols_to_compare)
+
+    all_subsets, y_subsets, similarities_list, k_nearest_indices_list = [], [], [], []
+
+    for test_idx in range(len(X_test)):
+        test_instance = X_test.iloc[test_idx][cols_to_compare]
+        valid_feats = test_instance.index[test_instance.notna()]
+
+        test_vector = test_instance[valid_feats].values
+        anchor_vectors = X_anchors[valid_feats].values
+
+        similarities = gower_similarity_mixed_raw(
+            anchor_vectors=anchor_vectors,
+            test_vector=test_vector,
+            feature_names=list(valid_feats),
+            symptom_cols=symptom_cols,
+            TEST_BOUNDS=TEST_BOUNDS,
+            feature_range=symptom_range,
+            debug=(test_idx==4803)
+        )
+
+        k_nearest_indices = np.argsort(-similarities, kind='mergesort')[:k]
+        k_nearest_indices_list.append(k_nearest_indices)
+
+        subset_df = X_anchors.iloc[k_nearest_indices].reset_index(drop=True)
+        y_subset_df = y_anchors.iloc[k_nearest_indices].reset_index(drop=True)
+
+        all_subsets.append(subset_df)
+        y_subsets.append(y_subset_df)
+        similarities_list.append(similarities[k_nearest_indices])
+
+    return all_subsets, y_subsets, similarities_list, k_nearest_indices_list
+
 
 if __name__ == "__main__":
     
     k = 25              # Number of nearest neighbors
 
+    generic_symptoms_cols = ['fever_severity', 'cough_severity', 'chest_pain_severity',
+    'abdominal_pain_severity', 'fatigue_level', 'nausea']
+
     # Compute k-nearest subsets for each test instance
     all_subsets, y_subsets, similarities_list, k_nearest_indices = get_knn_subsets(X_test, X_anchors, y_anchors, k=k)
     all_subsets_dynamic, y_subsets_dynamic, similarities_list_dynamic, k_nearest_indices_dynamic = get_knn_subsets_dynamic(X_test, X_anchors, y_anchors, k=k, anchor_features=['hemoglobin', 'endoscopy_score'])
+    all_subsets_dynamic_raw, y_subsets_dynamic_raw, similarities_list_dynamic_raw, k_nearest_indices_dynamic_raw = get_knn_subsets_dynamic_raw(X_test_orig, X_anchors_orig, y_anchors_orig, k=k, anchor_features=['hemoglobin', 'endoscopy_score'], symptom_cols=generic_symptoms_cols, TEST_BOUNDS=TEST_BOUNDS, symptom_range=(0,10))
+    
     # Load trained XGBoost model
     xgb_cl = xgb.XGBClassifier()
     xgb_cl.load_model("xgb_model.json")
@@ -222,12 +343,16 @@ if __name__ == "__main__":
 
     # Example: inspect first test instance
     test_idx = 0
-    print("Test instance:", test_idx, X_test.iloc[test_idx], "\n")
+    print("Test instance:\n", test_idx, X_test.iloc[test_idx], "\n")
     print("\nSubset of test instance", test_idx, ":\n")
-    print(all_subsets[test_idx])
-    print(all_subsets_dynamic[test_idx])
+    print(all_subsets[test_idx].iloc[0])
+    print("\nSubset dynamic of test instance", test_idx, ":\n")
+    print(all_subsets_dynamic[test_idx].iloc[0])
+    print("\nSubset dynamic raw of test instance", test_idx, ":\n")
+    print(all_subsets_dynamic_raw[test_idx].iloc[0])
     print("Similarities:\n", similarities_list[test_idx])
     print("Similarities dynamic:\n", similarities_list_dynamic[test_idx])
+    print("Similarities dynamic raw:\n", similarities_list_dynamic_raw[test_idx])
 
     # Construct and visualize prediction sets for first test instance
     alpha = 0.01
@@ -242,3 +367,45 @@ if __name__ == "__main__":
         classes_in_set = class_names[prediction_sets[i]]
         print(f"Sample {i}: Prediction set: {list(classes_in_set)}")
         print(f"Sample {i}: True class: {y_subsets[test_idx][i]}")
+
+    test_idx = 0
+    cols_to_compare = list(set(generic_symptoms_cols + ['hemoglobin', 'endoscopy_score']))
+    test_instance_raw = X_test_orig.iloc[test_idx][cols_to_compare]
+    valid_feats_raw = test_instance_raw.index[test_instance_raw.notna()]
+
+    test_instance_bin = X_test.iloc[test_idx][cols_to_compare]
+    valid_feats_bin = test_instance_bin.index[test_instance_bin.notna()]
+
+    test_vector_raw = test_instance_raw[valid_feats_raw].values
+    anchor_vectors_raw = X_anchors_orig[valid_feats_raw].values
+
+    test_vector_bin = test_instance_bin[valid_feats_bin].values
+    anchor_vectors_bin = X_anchors[valid_feats_bin].values
+
+    # NEW
+    sim_new = gower_similarity_mixed_raw(
+        anchor_vectors=anchor_vectors_raw,
+        test_vector=test_vector_raw,
+        feature_names=list(valid_feats_raw),
+        symptom_cols=generic_symptoms_cols,
+        TEST_BOUNDS=TEST_BOUNDS,
+        feature_range=(0, 10)
+    )
+
+    # OLD (if you keep it)
+    sim_old = gower_similarity_mixed(
+        anchor_vectors=anchor_vectors_bin,
+        test_vector=test_vector_bin,
+        feature_names=list(valid_feats_bin),
+        BIN_LEVELS=TEST_BIN_LABELS,
+        symptom_cols=generic_symptoms_cols,
+        symptom_range=(0, 10)
+    )
+    print("Top-10 indices (binned):", np.argsort(-sim_old)[:10])
+    print("Top-10 similarities (binned):", np.sort(sim_old)[-10:][::-1])
+    print("Top-10 indices (raw):", np.argsort(-sim_new)[:10])
+    print("Top-10 similarities (raw):", np.sort(sim_new)[-10:][::-1])
+    
+    print("Best neighbor according to raw similarity:", k_nearest_indices_dynamic_raw[test_idx][0], "with similarity", similarities_list_dynamic_raw[test_idx][0])
+    print("Test instance raw:\n", X_test_orig.iloc[test_idx])
+    print("Best neighbor raw:\n", X_anchors_orig.iloc[k_nearest_indices_dynamic_raw[test_idx][0]])
