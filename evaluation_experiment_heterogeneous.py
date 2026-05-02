@@ -1,5 +1,6 @@
 # ---------------------------------------------------------
 # IMPROVED EXPERIMENT WITH PROCEDURAL ANCHOR STATS:
+# HETEROGENEOUS VERSION: add missingness in generic symptoms
 # Evaluate all construction modes for excluding a label
 # from the correct disease group (chosen at random)
 # for up to 100 test instances.
@@ -57,6 +58,40 @@ generic_symptoms_cols = [
 ]
 
 # ---------------------------------------------------------
+# Helper: inject heterogeneous missingness in generic symptoms
+# ---------------------------------------------------------
+def inject_generic_missingness(df, generic_cols):
+    """
+    For each row:
+      - if it has 0 NaNs in generic_cols -> set 2 random generic_cols to NaN
+      - if it has 1 NaN in generic_cols -> set 1 more generic_col to NaN
+      - if it has >=2 NaNs -> leave as is.
+    Returns a modified copy of df.
+    """
+    df_mod = df.copy()
+
+    for idx, row in df_mod.iterrows():
+        g = row[generic_cols]
+        n_missing = g.isna().sum()
+
+        if n_missing == 0:
+            # choose 2 distinct generic symptoms to hide
+            cols_to_nan = np.random.choice(generic_cols, size=2, replace=False)
+        elif n_missing == 1:
+            # choose 1 extra generic symptom among the non-missing ones
+            available = [c for c in generic_cols if not pd.isna(row[c])]
+            if len(available) == 0:
+                continue
+            cols_to_nan = np.random.choice(available, size=1, replace=False)
+        else:
+            # already >=2 NaNs, leave as is
+            continue
+
+        df_mod.loc[idx, cols_to_nan] = np.nan
+
+    return df_mod
+
+# ---------------------------------------------------------
 # Procedural anchor hyperparameters
 # ---------------------------------------------------------
 N_SAMPLES_PROCEDURAL = 10000          # kept for signature compatibility
@@ -72,25 +107,6 @@ for col in X_train.columns:
     if len(vals) > 0:
         FEATURE_DOMAINS[col] = vals
 
-# Threshold above which we consider an anchor "procedural"
-# (i.e., each predicate covers a large portion of its feature's domain)
-# PROCEDURAL_THRESHOLD = 0.8
-
-GENERIC_SYMPTOMS_SET = set(generic_symptoms_cols)
-
-def filter_predicates_excluding_generic_symptoms(predicate_names, generic_set=GENERIC_SYMPTOMS_SET):
-    """
-    Keep only predicates whose feature is NOT a generic symptom.
-    These are the diagnostic-test predicates.
-    """
-    keep = []
-    for cond in predicate_names:
-        feat = extract_feature_name(cond)
-        if feat not in generic_set:
-            keep.append(cond)
-    return keep
-
-
 def extract_feature_name(cond_str):
     """
     Extract the feature name from a predicate like:
@@ -105,18 +121,6 @@ def extract_feature_name(cond_str):
             return cond_str.split(op, 1)[0].strip()
     # fallback: first token
     return cond_str.split()[0].strip()
-
-def anchor_feature_set(predicate_names):
-    """Return the set of feature names used by an anchor (from predicate strings)."""
-    return {extract_feature_name(cond) for cond in predicate_names}
-
-def is_only_generic_symptoms_anchor(predicate_names, generic_set=GENERIC_SYMPTOMS_SET):
-    feats = anchor_feature_set(predicate_names)
-    return (len(feats) > 0) and feats.issubset(generic_set)
-
-def is_no_generic_symptoms_anchor(predicate_names, generic_set=GENERIC_SYMPTOMS_SET):
-    feats = anchor_feature_set(predicate_names)
-    return len(feats.intersection(generic_set)) == 0
 
 def parse_condition(cond):
     """
@@ -209,54 +213,54 @@ def anchor_procedural_score(predicate_names, feature_domains):
 
     return float(np.mean(fracs))
 
-# def compute_resampled_precision(
-#     predicate_names,
-#     neighbors_df,
-#     pred_sets_names,
-#     label_to_exclude,
-#     n_samples=N_SAMPLES_PROCEDURAL
-# ):
-#     """
-#     Deterministic version (no resampling):
+def compute_resampled_precision(
+    predicate_names,
+    neighbors_df,
+    pred_sets_names,
+    label_to_exclude,
+    n_samples=N_SAMPLES_PROCEDURAL
+):
+    """
+    Deterministic version (no resampling):
 
-#     - Use ALL neighbors in neighbors_df.
-#     - Keep only those neighbors where ALL features appearing in
-#       predicate_names are non-NaN.
-#     - Among those, compute:
-#         new_precision = (# of those with prediction set excluding label_to_exclude)
-#                         / ( # of those )
+    - Use ALL neighbors in neighbors_df.
+    - Keep only those neighbors where ALL features appearing in
+      predicate_names are non-NaN.
+    - Among those, compute:
+        new_precision = (# of those with prediction set excluding label_to_exclude)
+                        / ( # of those )
 
-#     Returns (new_precision, n_effective)
-#       - new_precision is None if no effective points.
-#       - n_effective = number of neighbors used in the fraction.
-#     """
-#     n_neighbors = len(neighbors_df)
-#     if n_neighbors == 0:
-#         return None, 0
+    Returns (new_precision, n_effective)
+      - new_precision is None if no effective points.
+      - n_effective = number of neighbors used in the fraction.
+    """
+    n_neighbors = len(neighbors_df)
+    if n_neighbors == 0:
+        return None, 0
 
-#     # Features involved in the anchor
-#     feature_names = sorted({extract_feature_name(cond) for cond in predicate_names})
+    # Features involved in the anchor
+    feature_names = sorted({extract_feature_name(cond) for cond in predicate_names})
 
-#     # If any feature is not found in the DataFrame, we can't compute this
-#     for feat in feature_names:
-#         if feat not in neighbors_df.columns:
-#             return None, 0
+    # If any feature is not found in the DataFrame, we can't compute this
+    for feat in feature_names:
+        if feat not in neighbors_df.columns:
+            return None, 0
 
-#     # Mask of neighbors where all these features are defined
-#     valid_mask = neighbors_df[feature_names].notna().all(axis=1).to_numpy()
-#     effective_idx = np.where(valid_mask)[0]
+    # Mask of neighbors where all these features are defined
+    valid_mask = neighbors_df[feature_names].notna().all(axis=1).to_numpy()
+    effective_idx = np.where(valid_mask)[0]
 
-#     if len(effective_idx) == 0:
-#         return None, 0
+    if len(effective_idx) == 0:
+        return None, 0
 
-#     # For those effective neighbors, check if prediction set excludes the label
-#     excludes_flags = [
-#         (label_to_exclude not in pred_sets_names[i])
-#         for i in effective_idx
-#     ]
+    # For those effective neighbors, check if prediction set excludes the label
+    excludes_flags = [
+        (label_to_exclude not in pred_sets_names[i])
+        for i in effective_idx
+    ]
 
-#     new_precision = float(np.mean(excludes_flags))
-#     return new_precision, len(effective_idx)
+    new_precision = float(np.mean(excludes_flags))
+    return new_precision, len(effective_idx)
 
 
 def compute_procedural_stats_for_anchor(
@@ -287,54 +291,6 @@ def compute_procedural_stats_for_anchor(
     delta = abs(orig_precision - new_prec)
     is_procedural = (delta <= DELTA_PROCEDURAL_THRESHOLD)
     return new_prec, delta, is_procedural
-
-def compute_resampled_precision(
-    predicate_names,
-    neighbors_df,
-    pred_sets_names,
-    label_to_exclude,
-    n_samples=N_SAMPLES_PROCEDURAL,
-    generic_symptoms_set=GENERIC_SYMPTOMS_SET,
-):
-    """
-    Deterministic version (no resampling), BUT:
-    - We compute the effective set of neighbors using ONLY diagnostic-test predicates
-      (i.e., predicates whose features are NOT in generic_symptoms_set).
-
-    Returns (new_precision, n_effective)
-      - new_precision is None if no effective points or no diagnostic-test predicates.
-    """
-    n_neighbors = len(neighbors_df)
-    if n_neighbors == 0:
-        return None, 0
-
-    # Keep ONLY diagnostic-test predicates (exclude generic symptoms)
-    test_predicates = filter_predicates_excluding_generic_symptoms(
-        predicate_names, generic_set=generic_symptoms_set
-    )
-
-    # If no diagnostic-test predicates, we cannot call it procedural by your new definition
-    if len(test_predicates) == 0:
-        return None, 0
-
-    # Features involved in the (test-only) anchor
-    feature_names = sorted({extract_feature_name(cond) for cond in test_predicates})
-
-    for feat in feature_names:
-        if feat not in neighbors_df.columns:
-            return None, 0
-
-    valid_mask = neighbors_df[feature_names].notna().all(axis=1).to_numpy()
-    effective_idx = np.where(valid_mask)[0]
-    if len(effective_idx) == 0:
-        return None, 0
-
-    excludes_flags = [
-        (label_to_exclude not in pred_sets_names[i])
-        for i in effective_idx
-    ]
-    new_precision = float(np.mean(excludes_flags))
-    return new_precision, len(effective_idx)
 
 
 # ---------------------------------------------------------
@@ -594,17 +550,8 @@ beam_size = 10
 selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
 
 results = []
-# ---------------------------------------------------------
-# GLOBAL (anchor-level) delta accumulators
-# ---------------------------------------------------------
-ALL_ANCHOR_DELTAS = {
-    'original': [],
-    'mean': [],
-    'union1': [],
-    'union2': [],
-}
 
-output_path = f"improved_anchor_experiment_results_full_framework_procedural_10_7_correct_group_nosympt_new_onlyplot_{time.time()}.txt"
+output_path = f"improved_anchor_experiment_results_full_framework_procedural_heterogeneous_{time.time()}.txt"
 
 labels_stomach = [1, 5, 6, 7, 8]
 labels_lung = [0, 2, 3, 4, 9]
@@ -613,7 +560,7 @@ labels_lung = [0, 2, 3, 4, 9]
 # MAIN LOOP OVER TEST INSTANCES
 # ---------------------------------------------------------
 with open(output_path, "w") as f:
-    f.write("IMPROVED EXPERIMENT ON PROPOSED FRAMEWORK (all modes, with procedural stats)\n")
+    f.write("IMPROVED HETEROGENEOUS EXPERIMENT ON PROPOSED FRAMEWORK (all modes, with procedural stats)\n")
     f.write(f"Number of test instances: {n_instances}\n")
     f.write(f"Beam size: {beam_size}\n")
     f.write("=" * 100 + "\n\n")
@@ -626,18 +573,42 @@ with open(output_path, "w") as f:
         # -----------------------------
         # 1) BASIC INSTANCE INFO
         # -----------------------------
-        new_patient = X_test.iloc[new_patient_idx]
+        # Fully observed patient for prediction
+        orig_patient = X_test.iloc[new_patient_idx].copy()
         new_patient_true_label = y_test.iloc[new_patient_idx]
-        new_patient_pred = xgb_cl.predict(new_patient.values.reshape(1, -1))[0]
+        new_patient_pred = xgb_cl.predict(orig_patient.values.reshape(1, -1))[0]
+
+        # HETEROGENEOUS VERSION: inject missing generic symptoms into the patient
+        new_patient = orig_patient.copy()
+        g = new_patient[generic_symptoms_cols]
+        n_missing = g.isna().sum()
+
+        if n_missing == 0:
+            # impose 2 NaNs in random generic symptom columns
+            cols_to_nan = np.random.choice(generic_symptoms_cols, size=2, replace=False)
+            new_patient[cols_to_nan] = np.nan
+        elif n_missing == 1:
+            # impose 1 additional NaN among the non-missing generic symptoms
+            available = [c for c in generic_symptoms_cols if not pd.isna(new_patient[c])]
+            if len(available) > 0:
+                col_to_nan = np.random.choice(available, size=1, replace=False)
+                new_patient[col_to_nan] = np.nan
+        # if already >=2 NaNs, leave as is
 
         f.write(f"True label: {new_patient_true_label} ({categories[new_patient_true_label]})\n")
         f.write(f"Predicted label: {new_patient_pred} ({categories[new_patient_pred]})\n\n")
 
-        subset_new_patient = all_subsets[new_patient_idx]
+        subset_new_patient = all_subsets[new_patient_idx].copy()
         y_subset_new_patient = y_subsets[new_patient_idx]
 
         subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
         y_subset_new_patient_raw = y_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
+
+        # HETEROGENEOUS VERSION: inject missing generic symptoms in the local neighborhood (binned)
+        subset_new_patient = inject_generic_missingness(
+            subset_new_patient,
+            generic_symptoms_cols
+        )
 
         # -----------------------------
         # 2) CONFORMAL PREDICTION SETS
@@ -697,7 +668,7 @@ with open(output_path, "w") as f:
         # -----------------------------
         idx_example_to_anchor = np.random.choice(list(pred_set_without_target.keys()))
         anchor_row = subset_new_patient.iloc[idx_example_to_anchor].copy()
-        # Impute generic symptoms from actual patient
+        # Impute generic symptoms from actual (possibly missing) patient
         anchor_row[generic_symptoms_cols] = new_patient[generic_symptoms_cols].values
         anchor_instance = anchor_row.to_numpy()
 
@@ -832,11 +803,11 @@ with open(output_path, "w") as f:
         # 7) ORIGINAL MODE
         # ----------------------------------------------------
         f.write("ORIGINAL MODE\n")
+        t0_mode = time.time()
 
         f.write(f"Anchor candidate index within subset: {idx_example_to_anchor}\n")
         f.write(f"True label of anchor instance: {y_subset_new_patient.iloc[idx_example_to_anchor]}\n")
         f.write(f"Predicted label of anchor instance: {xgb_cl.predict(anchor_instance.reshape(1, -1))[0]}\n\n")
-        t0_mode = time.time()
 
         exp_original, valid_anchors_original = explainer_orig.explain_instance(
             anchor_instance, xgb_cl, mode="conformal",
@@ -888,8 +859,6 @@ with open(output_path, "w") as f:
                 pred_sets_names=pred_sets_names,
                 label_to_exclude=label_to_exclude,
             )
-            if delta_va is not None:
-                ALL_ANCHOR_DELTAS['original'].append(delta_va)
             if is_proc_va:
                 num_proc_anchors_orig += 1
 
@@ -921,15 +890,6 @@ with open(output_path, "w") as f:
             valid_anchors_original,
             key=lambda va: va['coverage'][-1],
             reverse=True
-        )
-        num_only_generic_orig = sum(
-            1 for va in valid_anchors_original
-            if is_only_generic_symptoms_anchor(va['names'])
-        )
-
-        f.write(
-            f"#anchors with ONLY generic symptoms (original): "
-            f"{num_only_generic_orig} / {len(valid_anchors_original)}\n"
         )
 
         for i, va in enumerate(sorted_valid_anchors_original, 1):
@@ -974,7 +934,6 @@ with open(output_path, "w") as f:
             'procedural_delta_main': delta_main_orig,
             'main_is_procedural': int(is_procedural_main_orig),
             'runtime': runtime_orig,
-            'num_only_generic_anchors': num_only_generic_orig,
         })
 
         # ----------------------------------------------------
@@ -1017,12 +976,11 @@ with open(output_path, "w") as f:
             pred_sets_names=pred_sets_names,
             label_to_exclude=label_to_exclude,
         )
-    
+
         f.write(f"Does MAIN anchor (mean-instances) apply to patient? {main_applies_mean}\n")
         f.write(
             "Procedural score (main, mean-instances): "
             f"{'%.3f' % main_proc_score_mean if main_proc_score_mean is not None else 'NA'};\n"
-            
         )
         f.write(
             "resampled_precision(main, mean-instances)= "
@@ -1049,8 +1007,6 @@ with open(output_path, "w") as f:
                     pred_sets_names=pred_sets_names,
                     label_to_exclude=label_to_exclude,
                 )
-                if delta_va is not None:
-                    ALL_ANCHOR_DELTAS['mean'].append(delta_va)
                 if is_proc_va:
                     num_proc_anchors_mean += 1
 
@@ -1073,16 +1029,6 @@ with open(output_path, "w") as f:
             key=lambda va: va['coverage'][-1],
             reverse=True
         )
-        num_only_generic_mean = sum(
-            1 for va in valid_anchors_mean
-            if is_only_generic_symptoms_anchor(va['names'])
-        )
-
-        f.write(
-            f"#anchors with ONLY generic symptoms (mean-instances): "
-            f"{num_only_generic_mean} / {len(valid_anchors_mean)}\n"
-        )
-
         for i, va in enumerate(sorted_valid_anchors_mean, 1):
             names = " AND ".join(va['names'])
             prec = va['precision'][-1]
@@ -1125,7 +1071,6 @@ with open(output_path, "w") as f:
             'procedural_delta_main': delta_main_mean,
             'main_is_procedural': int(is_procedural_main_mean),
             'runtime': runtime_mean,
-            'num_only_generic_anchors': num_only_generic_mean,
         })
 
         # ----------------------------------------------------
@@ -1148,15 +1093,6 @@ with open(output_path, "w") as f:
                 delta=0.1,
                 tau=0.15,
                 beam_size=7
-            )
-            num_only_generic_med = sum(
-                1 for va in valid_anchors_m
-                if is_only_generic_symptoms_anchor(va['names'])
-            )
-
-            f.write(
-                f"#anchors with ONLY generic symptoms (medoid {m_id}): "
-                f"{num_only_generic_med} / {len(valid_anchors_m)}\n"
             )
 
             # collect medoid anchors for union modes
@@ -1220,9 +1156,10 @@ with open(output_path, "w") as f:
                     if anchor_applies_to_instance(va['names'], new_patient):
                         num_valid_apply += 1
                     score_va = anchor_procedural_score(va['names'], FEATURE_DOMAINS)
+                    prec_va = va['precision'][-1]
                     proc_prec_va, delta_va, is_proc_va = compute_procedural_stats_for_anchor(
                         va['names'],
-                        orig_precision=va['precision'][-1],
+                        orig_precision=prec_va,
                         neighbors_df=subset_new_patient,
                         pred_sets_names=pred_sets_names,
                         label_to_exclude=label_to_exclude,
@@ -1294,7 +1231,6 @@ with open(output_path, "w") as f:
                 'procedural_delta_main': delta_main_med,
                 'main_is_procedural': int(is_procedural_main_med),
                 'runtime': None,  # medoid runtime aggregated later
-                'num_only_generic_anchors': num_only_generic_med,
             })
             f.write("\n")
 
@@ -1305,14 +1241,7 @@ with open(output_path, "w") as f:
         # 8b) UNION-PRUNED FINAL ANCHORS (modes 1 & 2)
         # ----------------------------------------------------
         coverage_df = subset_new_patient
-        flatten_tol = 1e-2
-
-        # def extract_feature_name(cond_str):
-        #     cond_str = cond_str.strip()
-        #     for op in ["≤", "<=", ">", "="]:
-        #         if op in cond_str:
-        #             return cond_str.split(op, 1)[0].strip()
-        #     return cond_str
+        flatten_tol = 1e-4
 
         # UNION MODE 1
         f.write("\nUNION MODE 1 (max marginal gain):\n")
@@ -1323,16 +1252,7 @@ with open(output_path, "w") as f:
             n_samples=10000,
             flatten_tol=flatten_tol
         )
-        num_only_generic_u1 = sum(
-            1 for a in final_anchors_u1
-            if is_only_generic_symptoms_anchor(a['names'])
-        )
-
-        f.write(
-            f"#final anchors with ONLY generic symptoms (union1): "
-            f"{num_only_generic_u1} / {len(final_anchors_u1)}\n"
-        )
-        runtime_u1 = time.time() - t0_union1 + runtime_medoid  # include medoid runtime since union modes use medoid anchors
+        runtime_u1 = time.time() - t0_union1
         f.write(f"Union coverage (mode 1): {final_union_cov_u1:.5f}\n")
         f.write(f"Runtime (union mode 1): {runtime_u1:.4f} seconds\n")
 
@@ -1350,8 +1270,6 @@ with open(output_path, "w") as f:
                     pred_sets_names=pred_sets_names,
                     label_to_exclude=label_to_exclude,
                 )
-                if delta_fa is not None:
-                    ALL_ANCHOR_DELTAS['union1'].append(delta_fa)
                 if is_proc_fa:
                     num_proc_u1 += 1
                 fa['procedural_score'] = score_fa
@@ -1443,7 +1361,6 @@ with open(output_path, "w") as f:
                 'procedural_delta_main': main_delta_u1,
                 'main_is_procedural': main_is_proc_u1,
                 'runtime': runtime_u1,
-                'num_only_generic_anchors': num_only_generic_u1,
             })
 
         # UNION MODE 2
@@ -1455,17 +1372,7 @@ with open(output_path, "w") as f:
             n_samples=10000,
             flatten_tol=flatten_tol
         )
-
-        num_only_generic_u2 = sum(
-            1 for a in final_anchors_u2
-            if is_only_generic_symptoms_anchor(a['names'])
-        )
-
-        f.write(
-            f"#final anchors with ONLY generic symptoms (union2): "
-            f"{num_only_generic_u2} / {len(final_anchors_u2)}\n"
-        )
-        runtime_u2 = time.time() - t0_union2 + runtime_medoid  # include medoid runtime since union modes use medoid anchors
+        runtime_u2 = time.time() - t0_union2
         f.write(f"Union coverage (mode 2): {final_union_cov_u2:.5f}\n")
         f.write(f"Runtime (union mode 2): {runtime_u2:.4f} seconds\n")
 
@@ -1483,8 +1390,6 @@ with open(output_path, "w") as f:
                     pred_sets_names=pred_sets_names,
                     label_to_exclude=label_to_exclude,
                 )
-                if delta_fa is not None:
-                    ALL_ANCHOR_DELTAS['union2'].append(delta_fa)
                 if is_proc_fa:
                     num_proc_u2 += 1
 
@@ -1577,7 +1482,6 @@ with open(output_path, "w") as f:
                 'procedural_delta_main': main_delta_u2,
                 'main_is_procedural': main_is_proc_u2,
                 'runtime': runtime_u2,
-                'num_only_generic_anchors': num_only_generic_u2,
             })
 
         f.write("-" * 80 + "\n\n")
@@ -1604,13 +1508,6 @@ with open(output_path, "w") as f:
         main_applies_values = [r['main_applies'] for r in mode_results]
         num_valid_apply_values = [r['num_valid_apply'] for r in mode_results]
         runtime_values = [r['runtime'] for r in mode_results if r.get('runtime') is not None]
-        only_generic_values = [r.get('num_only_generic_anchors', 0) for r in mode_results]
-        avg_only_generic = np.mean(only_generic_values)
-        std_only_generic = np.std(only_generic_values)
-
-        total_only_generic = int(np.sum(only_generic_values))
-        total_anchors_mode = int(np.sum(valid_anchors_values))  # you already compute this later too
-        frac_only_generic = total_only_generic / total_anchors_mode if total_anchors_mode > 0 else 0.0
 
         main_proc_scores = [r.get('main_procedural_score', None) for r in mode_results]
         # convert to numpy array with NaNs
@@ -1681,29 +1578,9 @@ with open(output_path, "w") as f:
         )
         f.write(f"  Avg |precision - resampled_precision| (main): {avg_main_delta:.4f}\n")
 
-        f.write(
-            f"  Avg #ONLY-generic-symptom anchors: {avg_only_generic:.4f} (std={std_only_generic:.4f})\n"
-        )
-        f.write(
-            f"  Total ONLY-generic-symptom anchors: {total_only_generic} / {total_anchors_mode} "
-            f"({frac_only_generic:.4f})\n"
-        )
-
         if runtime_values:
-            min_runtime, max_runtime = np.min(runtime_values), np.max(runtime_values)
             avg_runtime, std_runtime = np.mean(runtime_values), np.std(runtime_values)
-            median_runtime = np.median(runtime_values)
-            q25, q75 = np.percentile(runtime_values, [25, 75])
             f.write(f"  Avg runtime per instance (seconds): {avg_runtime:.4f} (std={std_runtime:.4f})\n")
-            f.write(f"  Min/Max runtime per instance (seconds): {min_runtime:.4f} / {max_runtime:.4f}\n")
-            f.write(f"  Median runtime per instance (seconds): {median_runtime:.4f}\n")
-            f.write(f"  25th/75th percentiles: {q25:.4f} / {q75:.4f}\n")
-            q10, q90, q95 = np.percentile(runtime_values, [10, 90, 95])
-            f.write(
-                f"  10th / 90th / 95th percentile runtime (seconds): "
-                f"{q10:.4f} / {q90:.4f} / {q95:.4f}\n"
-            )
-
 
         if mode == 'medoid':
             medoid_counts = {}
@@ -1727,25 +1604,12 @@ with open(output_path, "w") as f:
                     f"  Avg #medoids per instance: {avg_medoids:.4f} "
                     f"(std={std_medoids:.4f}, min={min_medoids}, max={max_medoids})\n"
                 )
-        if mode in ALL_ANCHOR_DELTAS:
-            deltas_pool = np.array(ALL_ANCHOR_DELTAS[mode], dtype=float)
-            avg_delta_all_anchors = float(np.mean(deltas_pool)) if deltas_pool.size > 0 else float('nan')
-            f.write(f"  Avg |precision - resampled_precision| (ALL anchors, pooled): {avg_delta_all_anchors:.4f}\n")
-            f.write(f"  #anchors used in pooled delta: {int(deltas_pool.size)}\n")
 
         f.write("\n")
 
     # ---------------------------------------------------------
     # 10) PLOTS OF UNION COVERAGE FLATTENING (MODES 1 & 2)
     # ---------------------------------------------------------
-    plt.rcParams.update({
-    "font.size": 14,
-    "axes.titlesize": 17,
-    "axes.labelsize": 15,
-    "xtick.labelsize": 13,
-    "ytick.labelsize": 13,
-    "legend.fontsize": 13,
-    })
     for mode, prefix in [('union1', 'mode1'), ('union2', 'mode2')]:
         union_results = [r for r in results if r['mode'] == mode and 'coverage_traj' in r]
 
@@ -1757,23 +1621,20 @@ with open(output_path, "w") as f:
         for i, r in enumerate(union_results):
             traj = r['coverage_traj']
             traj_matrix[i, :len(traj)] = traj
-            traj_matrix[i, len(traj):max_len] = traj[-1]
 
         mean_traj = np.nanmean(traj_matrix, axis=0)
         x = np.arange(1, max_len + 1)
 
-        plt.figure(figsize=(5,5))
+        plt.figure()
         for i in range(traj_matrix.shape[0]):
             plt.plot(x, traj_matrix[i, :], alpha=0.2)
         plt.plot(x, mean_traj, linewidth=2)
         plt.xlabel("Number of union anchors added")
-        plt.ylabel("Cumulative union coverage")
+        plt.ylabel("Cumulative union coverage (sampled)")
         plt.title(f"Union coverage trajectories ({mode})")
-        from matplotlib.ticker import MaxNLocator
-        plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
         plt.grid(True)
         plt.tight_layout()
-        plt.savefig(f"union_coverage_flattens_{prefix}_10.pdf")
+        plt.savefig(f"union_coverage_flattens_{prefix}_10_bestanchors.png", dpi=200)
         plt.close()
 
         max_len_g = max(len(r['gain_traj']) for r in union_results)
@@ -1785,18 +1646,16 @@ with open(output_path, "w") as f:
         mean_gain = np.nanmean(gain_matrix, axis=0)
         xg = np.arange(1, max_len_g + 1)
 
-        plt.figure(figsize=(5,5))
+        plt.figure()
         for i in range(gain_matrix.shape[0]):
             plt.plot(xg, gain_matrix[i, :], alpha=0.2)
         plt.plot(xg, mean_gain, linewidth=2)
         plt.xlabel("Anchor index in union selection order")
         plt.ylabel("Marginal gain in union coverage")
         plt.title(f"Marginal gains of union coverage ({mode})")
-        from matplotlib.ticker import MaxNLocator
-        plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
         plt.grid(True)
         plt.tight_layout()
-        plt.savefig(f"union_coverage_gains_{prefix}_10.pdf")
+        plt.savefig(f"union_coverage_gains_{prefix}_10_bestanchors.png", dpi=200)
         plt.close()
 
     end_time = time.time()

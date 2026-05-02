@@ -1,21 +1,13 @@
 # ---------------------------------------------------------
-# IMPROVED Experiment: Exclude TRUE label
-# - original vs K-Medoids (RAW Gower) vs UNION pruning
+# Run IMPROVED experiment on up to 100 test instances
 # ---------------------------------------------------------
 
 from anchor.anchor.anchor_tabular import * 
-from model_training import (
-    X_train, y_train, X_conf_pred, y_conf_pred,
-    X_anchors, y_anchors, X_test, y_test,
-    X_train_orig, y_train_orig,
-    X_conf_pred_orig, y_conf_pred_orig,
-    X_anchors_orig, y_anchors_orig,
-    X_test_orig, y_test_orig,
-    categories
-)
+from model_training import X_train, y_train, X_conf_pred, y_conf_pred, X_anchors, y_anchors, X_test, y_test, X_train_orig, y_train_orig, X_conf_pred_orig, y_conf_pred_orig, X_anchors_orig, y_anchors_orig, X_test_orig, y_test_orig
 import xgboost as xgb
 from subset import get_knn_subsets, gower_similarity_mixed_raw
 from prediction_set import compute_conformal_prediction_set_batch
+from model_training import categories
 import matplotlib.pyplot as plt
 from data.tests_v2 import TESTS
 from binning import bin_dataset
@@ -100,7 +92,6 @@ def anchor_applies_to_instance(predicate_names, patient_series):
     # All predicates satisfied
     return True
 
-
 def gower_distance_to_all_raw(X, x, feature_names, symptom_cols, TEST_BOUNDS, symptom_range=(0, 10)):
     # distance = 1 - similarity
     return 1.0 - gower_similarity_mixed_raw(
@@ -132,68 +123,39 @@ def compute_gower_distance_matrix_raw(X, feature_names, symptom_cols, TEST_BOUND
     print(D)
     return D
 
+
 def union_prune_anchors(anchors, coverage_df, n_samples=10000, flatten_tol=1e-6):
     """
-    Mode 1
+    Mode 2 (best anchors)
     Union-pruning over a collection of anchors for a single test instance, using
     coverage estimated on n_samples points drawn WITH REPLACEMENT from
     coverage_df (which should be subset_new_patient).
 
-    At each step, among all remaining anchors, we pick the one that yields
-    the largest increase in UNION coverage. We stop when the best possible
-    gain is <= flatten_tol.
-
-    Parameters
-    ----------
-    anchors : list of dict
-        Each dict MUST contain at least:
-          - 'names': list of predicate-strings for the anchor.
-
-    coverage_df : pandas.DataFrame
-        Universe to sample from (e.g. subset_new_patient).
-
-    n_samples : int, default=10000
-        Number of samples drawn with replacement from coverage_df.
-
-    flatten_tol : float, default=1e-6
-        Minimum required increase in cumulative coverage (on the sampled data)
-        to keep adding anchors. If the best possible gain is <= flatten_tol,
-        we stop.
-
     Returns
     -------
     final_anchors : list of dict
-        Subset of anchors selected by the union-pruning strategy.
-        Each anchor dict is augmented with:
-          - 'coverage_idx': set of sample indices it covers
-          - 'cov_train': float, individual coverage on the sampled data
-
     final_union_coverage : float
-        Cumulative coverage of the union of all selected anchors on the
-        sampled data.
+    coverage_trajectory : list of float
+        Cumulative coverage after each accepted anchor.
+    gain_trajectory : list of float
+        Marginal gain in coverage for each accepted anchor.
     """
     if not anchors:
-        return [], 0.0
+        return [], 0.0, [], []
 
     n_universe = coverage_df.shape[0]
     if n_universe == 0:
-        return [], 0.0
+        return [], 0.0, [], []
 
-    # ----------------------------------------------------
     # 1) SAMPLE EXACTLY n_samples ROWS WITH REPLACEMENT
-    #    from coverage_df (subset_new_patient)
-    # ----------------------------------------------------
     sampled_idx = np.random.choice(range(n_universe), size=n_samples, replace=True)
     coverage_data = coverage_df.iloc[sampled_idx].reset_index(drop=True)
-    n_cov = coverage_data.shape[0]   # should be n_samples
+    n_cov = coverage_data.shape[0]   # will be n_samples
 
-    # ----------------------------------------------------
     # 2) PRECOMPUTE COVERAGE INDICES PER ANCHOR
-    # ----------------------------------------------------
     state = {'t_coverage_idx': {}}
 
     for t, a in enumerate(anchors):
-        # For each row in coverage_data, check if anchor applies
         mask = coverage_data.apply(
             lambda row: anchor_applies_to_instance(a['names'], row),
             axis=1
@@ -201,89 +163,112 @@ def union_prune_anchors(anchors, coverage_df, n_samples=10000, flatten_tol=1e-6)
 
         covered_idx = set(np.where(mask)[0])
 
-        # Save indices and individual coverage on sampled data
         state['t_coverage_idx'][t] = covered_idx
         a['coverage_idx'] = covered_idx
         a['cov_train'] = float(len(covered_idx)) / n_cov
 
-    # ----------------------------------------------------
-    # 3) GREEDY UNION SELECTION BY MAX MARGINAL GAIN
-    # ----------------------------------------------------
+    # 3) SORT ANCHORS BY INDIVIDUAL COVERAGE (DESCENDING)
+    sorted_t = sorted(range(len(anchors)), key=lambda t: anchors[t]['cov_train'], reverse=True)
+
+    # 4) GREEDY UNION SELECTION UNTIL CUMULATIVE COVERAGE FLATTENS
     final_anchors = []
     covered_union = set()
     last_cumulative_coverage = 0.0
 
-    remaining = set(range(len(anchors)))  # anchor indices not yet selected
-    rank = 0
     coverage_trajectory = []   # cumulative coverage after each accepted anchor
     gain_trajectory = []       # marginal gain for each accepted anchor
 
+    for rank, t in enumerate(sorted_t, start=1):
+        candidate_union = covered_union | state['t_coverage_idx'][t]
+        cumulative_coverage = float(len(candidate_union)) / n_cov
 
-    while remaining:
-        best_t = None
-        best_gain = 0.0
-        best_candidate_union = None
+        if rank == 1:
+            # always take the highest-coverage anchor
+            final_anchors.append(anchors[t])
+            covered_union = candidate_union
+            last_cumulative_coverage = cumulative_coverage
 
-        # Search anchor with maximum marginal gain in union coverage
-        for t in remaining:
-            candidate_union = covered_union | state['t_coverage_idx'][t]
-            cumulative_coverage = float(len(candidate_union)) / n_cov
+            coverage_trajectory.append(cumulative_coverage)
+            gain_trajectory.append(cumulative_coverage)  # gain from 0
+        else:
             gain = cumulative_coverage - last_cumulative_coverage
 
-            if gain > best_gain:
-                best_gain = gain
-                best_t = t
-                best_candidate_union = candidate_union
+            if gain <= flatten_tol:
+                # curve is "flat" -> stop
+                break
 
-        # If even the best possible gain is not above tolerance, stop
-        if best_t is None or best_gain <= flatten_tol:
-            break
+            final_anchors.append(anchors[t])
+            covered_union = candidate_union
+            last_cumulative_coverage = cumulative_coverage
 
-        # Otherwise, accept that anchor
-        rank += 1
-        final_anchors.append(anchors[best_t])
-        covered_union = best_candidate_union
-        last_cumulative_coverage = float(len(covered_union)) / n_cov
-        remaining.remove(best_t)
-
-        # Record trajectories
-        coverage_trajectory.append(last_cumulative_coverage)
-        gain_trajectory.append(best_gain)
+            coverage_trajectory.append(cumulative_coverage)
+            gain_trajectory.append(gain)
 
     return final_anchors, last_cumulative_coverage, coverage_trajectory, gain_trajectory
 
+
 # def union_prune_anchors(anchors, coverage_df, n_samples=10000, flatten_tol=1e-6):
 #     """
-#     Mode 2
+#     Mode 1 (all anchors)
 #     Union-pruning over a collection of anchors for a single test instance, using
 #     coverage estimated on n_samples points drawn WITH REPLACEMENT from
 #     coverage_df (which should be subset_new_patient).
 
+#     At each step, among all remaining anchors, we pick the one that yields
+#     the largest increase in UNION coverage. We stop when the best possible
+#     gain is <= flatten_tol.
+
+#     Parameters
+#     ----------
+#     anchors : list of dict
+#         Each dict MUST contain at least:
+#           - 'names': list of predicate-strings for the anchor.
+
+#     coverage_df : pandas.DataFrame
+#         Universe to sample from (e.g. subset_new_patient).
+
+#     n_samples : int, default=10000
+#         Number of samples drawn with replacement from coverage_df.
+
+#     flatten_tol : float, default=1e-6
+#         Minimum required increase in cumulative coverage (on the sampled data)
+#         to keep adding anchors. If the best possible gain is <= flatten_tol,
+#         we stop.
+
 #     Returns
 #     -------
 #     final_anchors : list of dict
+#         Subset of anchors selected by the union-pruning strategy.
+#         Each anchor dict is augmented with:
+#           - 'coverage_idx': set of sample indices it covers
+#           - 'cov_train': float, individual coverage on the sampled data
+
 #     final_union_coverage : float
-#     coverage_trajectory : list of float
-#         Cumulative coverage after each accepted anchor.
-#     gain_trajectory : list of float
-#         Marginal gain in coverage for each accepted anchor.
+#         Cumulative coverage of the union of all selected anchors on the
+#         sampled data.
 #     """
 #     if not anchors:
-#         return [], 0.0, [], []
+#         return [], 0.0
 
 #     n_universe = coverage_df.shape[0]
 #     if n_universe == 0:
-#         return [], 0.0, [], []
+#         return [], 0.0
 
+#     # ----------------------------------------------------
 #     # 1) SAMPLE EXACTLY n_samples ROWS WITH REPLACEMENT
+#     #    from coverage_df (subset_new_patient)
+#     # ----------------------------------------------------
 #     sampled_idx = np.random.choice(range(n_universe), size=n_samples, replace=True)
 #     coverage_data = coverage_df.iloc[sampled_idx].reset_index(drop=True)
-#     n_cov = coverage_data.shape[0]   # will be n_samples
+#     n_cov = coverage_data.shape[0]   # should be n_samples
 
+#     # ----------------------------------------------------
 #     # 2) PRECOMPUTE COVERAGE INDICES PER ANCHOR
+#     # ----------------------------------------------------
 #     state = {'t_coverage_idx': {}}
 
 #     for t, a in enumerate(anchors):
+#         # For each row in coverage_data, check if anchor applies
 #         mask = coverage_data.apply(
 #             lambda row: anchor_applies_to_instance(a['names'], row),
 #             axis=1
@@ -291,53 +276,59 @@ def union_prune_anchors(anchors, coverage_df, n_samples=10000, flatten_tol=1e-6)
 
 #         covered_idx = set(np.where(mask)[0])
 
+#         # Save indices and individual coverage on sampled data
 #         state['t_coverage_idx'][t] = covered_idx
 #         a['coverage_idx'] = covered_idx
 #         a['cov_train'] = float(len(covered_idx)) / n_cov
 
-#     # 3) SORT ANCHORS BY INDIVIDUAL COVERAGE (DESCENDING)
-#     sorted_t = sorted(range(len(anchors)), key=lambda t: anchors[t]['cov_train'], reverse=True)
-
-#     # 4) GREEDY UNION SELECTION UNTIL CUMULATIVE COVERAGE FLATTENS
+#     # ----------------------------------------------------
+#     # 3) GREEDY UNION SELECTION BY MAX MARGINAL GAIN
+#     # ----------------------------------------------------
 #     final_anchors = []
 #     covered_union = set()
 #     last_cumulative_coverage = 0.0
 
+#     remaining = set(range(len(anchors)))  # anchor indices not yet selected
+#     rank = 0
 #     coverage_trajectory = []   # cumulative coverage after each accepted anchor
 #     gain_trajectory = []       # marginal gain for each accepted anchor
 
-#     for rank, t in enumerate(sorted_t, start=1):
-#         candidate_union = covered_union | state['t_coverage_idx'][t]
-#         cumulative_coverage = float(len(candidate_union)) / n_cov
 
-#         if rank == 1:
-#             # always take the highest-coverage anchor
-#             final_anchors.append(anchors[t])
-#             covered_union = candidate_union
-#             last_cumulative_coverage = cumulative_coverage
+#     while remaining:
+#         best_t = None
+#         best_gain = 0.0
+#         best_candidate_union = None
 
-#             coverage_trajectory.append(cumulative_coverage)
-#             gain_trajectory.append(cumulative_coverage)  # gain from 0
-#         else:
+#         # Search anchor with maximum marginal gain in union coverage
+#         for t in remaining:
+#             candidate_union = covered_union | state['t_coverage_idx'][t]
+#             cumulative_coverage = float(len(candidate_union)) / n_cov
 #             gain = cumulative_coverage - last_cumulative_coverage
 
-#             if gain <= flatten_tol:
-#                 # curve is "flat" -> stop
-#                 break
+#             if gain > best_gain:
+#                 best_gain = gain
+#                 best_t = t
+#                 best_candidate_union = candidate_union
 
-#             final_anchors.append(anchors[t])
-#             covered_union = candidate_union
-#             last_cumulative_coverage = cumulative_coverage
+#         # If even the best possible gain is not above tolerance, stop
+#         if best_t is None or best_gain <= flatten_tol:
+#             break
 
-#             coverage_trajectory.append(cumulative_coverage)
-#             gain_trajectory.append(gain)
+#         # Otherwise, accept that anchor
+#         rank += 1
+#         final_anchors.append(anchors[best_t])
+#         covered_union = best_candidate_union
+#         last_cumulative_coverage = float(len(covered_union)) / n_cov
+#         remaining.remove(best_t)
+
+#         # Record trajectories
+#         coverage_trajectory.append(last_cumulative_coverage)
+#         gain_trajectory.append(best_gain)
 
 #     return final_anchors, last_cumulative_coverage, coverage_trajectory, gain_trajectory
 
+# ---------------------------------------------------------
 
-# ---------------------------------------------------------
-# 0) Setup
-# ---------------------------------------------------------
 # Load the trained model
 xgb_cl = xgb.XGBClassifier()
 xgb_cl.load_model("xgb_model.json")
@@ -352,32 +343,27 @@ generic_symptoms_cols = [
 start_time = time.time()
 
 # Compute k-nearest subsets for each test instance
-all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
-    X_test, X_anchors, y_anchors, k=100
-)
+all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(X_test, X_anchors, y_anchors, k=100)
 
 n_instances = 100
 n_instances = min(n_instances, len(X_test))   # safety
-beam_size = 1
+beam_size = 10
 
 # Choose which test indices to use (here: random without replacement)
 selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
-# selected_test_indices = [506, 10963, 10442, 6503, 7449, 1186]
+
 # To store per-(instance,mode) stats
 results = []
 
-output_path = "improved_anchor_experiment_TRUE_label_exclusion_all_neighbors_1_new_applicability_new.txt"
-
+output_path = "improved_anchor_experiment_results_10_bestanchors_new.txt"
+# Open the output file in the "write" mode and write the header and a separator line
 with open(output_path, "w") as f:
-    f.write("IMPROVED EXPERIMENT: Exclude TRUE label (original vs K-Medoids vs UNION)\n")
+    f.write("IMPROVED EXPERIMENT ON ANCHORS (original vs k-medoids)\n")
     f.write(f"Number of test instances: {n_instances}\n")
     f.write(f"Beam size: {beam_size}\n")
     f.write("=" * 100 + "\n\n")
 
-    # Count instances where NO neighbor prediction set excludes the TRUE label
-    counter_no_ps_excluding_true = 0
-
-    for run_id, new_patient_idx in enumerate(selected_test_indices, 1):  # start counting from 1
+    for run_id, new_patient_idx in enumerate(selected_test_indices, 1): # start counting from 1
         
         f.write(f"### INSTANCE {run_id}/{n_instances}  (test index = {new_patient_idx})\n")
         f.write("-" * 80 + "\n")
@@ -396,12 +382,8 @@ with open(output_path, "w") as f:
         subset_new_patient = all_subsets[new_patient_idx]
         y_subset_new_patient = y_subsets[new_patient_idx]
 
-        subset_new_patient_raw = X_anchors_orig.iloc[
-            indices_neighbors[new_patient_idx]
-        ].reset_index(drop=True)
-        y_subset_new_patient_raw = y_anchors_orig.iloc[
-            indices_neighbors[new_patient_idx]
-        ].reset_index(drop=True)
+        subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
+        y_subset_new_patient_raw = y_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
 
         # -----------------------------
         # 2) CONFORMAL PREDICTION SETS
@@ -419,10 +401,25 @@ with open(output_path, "w") as f:
         f.write(f"Prediction sets shape: {prediction_sets.shape}\n")
 
         # -----------------------------
-        # 3) CHOOSE CLASS TO EXCLUDE = TRUE LABEL
+        # 3) CHOOSE CLASS TO EXCLUDE
         # -----------------------------
-        label_to_exclude = int(new_patient_true_label)
-        f.write(f"Class to exclude (TRUE label): {label_to_exclude} ({categories[label_to_exclude]})\n\n")
+        labels_stomach = [1, 5, 6, 7, 8]
+        labels_lung = [0, 2, 3, 4, 9]
+
+        if new_patient_true_label in labels_stomach:
+            possible_labels = [i for i in labels_stomach if i != new_patient_true_label]
+            label_to_exclude = np.random.choice(possible_labels)
+        elif new_patient_true_label in labels_lung:
+            possible_labels = [i for i in labels_lung if i != new_patient_true_label]
+            label_to_exclude = np.random.choice(possible_labels)
+        else:
+            # fallback: just pick a random label != true one
+            all_labels = list(class_names)
+            possible_labels = [int(l) for l in all_labels if int(l) != int(new_patient_true_label)]
+            label_to_exclude = np.random.choice(possible_labels)
+        #label_to_exclude = 0#new_patient_true_label
+
+        f.write(f"Class to exclude: {label_to_exclude} ({categories[label_to_exclude]})\n\n")
 
         pred_sets_names = [list(class_names[mask]) for mask in prediction_sets]
 
@@ -432,21 +429,20 @@ with open(output_path, "w") as f:
                 pred_set_without_target[i] = pred_set
 
         if len(pred_set_without_target) == 0:
-            f.write("No prediction sets exclude the TRUE label. Skipping this instance.\n\n")
+            f.write("No prediction sets exclude the target label. Skipping this instance.\n\n")
             f.write("-" * 80 + "\n\n")
-            counter_no_ps_excluding_true += 1
             continue
 
-        f.write(f"{len(pred_set_without_target.keys())} prediction sets excluding TRUE label {label_to_exclude}:\n")
+        f.write(f"{len(pred_set_without_target.keys())} prediction sets excluding class {label_to_exclude}:\n")
         f.write(str(pred_set_without_target) + "\n\n")
 
         # Extract neighbors excluding target label and their labels
         idxs_neighbors_excluding_target = list(pred_set_without_target.keys())
-        f.write(f"Neighbors excluding TRUE label indices: {idxs_neighbors_excluding_target}\n")
+        f.write(f"Neighbors excluding target indices: {idxs_neighbors_excluding_target}\n")
         neighbors_excluding_target = subset_new_patient.iloc[idxs_neighbors_excluding_target]
         neighbors_excluding_target_raw = subset_new_patient_raw.iloc[idxs_neighbors_excluding_target]
         neighbors_labels = y_subset_new_patient.iloc[idxs_neighbors_excluding_target]
-        f.write(f"Neighbors excluding TRUE label labels: {neighbors_labels.tolist()}\n\n")
+        f.write(f"Neighbors excluding target labels: {neighbors_labels.tolist()}\n\n")
 
         # -----------------------------
         # 4) ORIGINAL MODE PREPARATION
@@ -477,7 +473,7 @@ with open(output_path, "w") as f:
 
         # Build raw mean-instances per label
         unique_labels = np.unique(neighbors_labels)
-        f.write(f"Unique labels in neighbors excluding TRUE label: {unique_labels.tolist()}\n")
+        f.write(f"Unique labels in neighbors excluding target: {unique_labels.tolist()}\n")
         mean_instances_raw = []
         cluster_list = []
         cluster_indices_list = []
@@ -531,6 +527,7 @@ with open(output_path, "w") as f:
             n_clusters=k,
             metric="precomputed",
             init=init_matrix,
+            #init="heuristic",
             max_iter=300,
             random_state=0
         )
@@ -651,7 +648,6 @@ with open(output_path, "w") as f:
         # Store results for global statistics
         results.append({
             'instance_idx': new_patient_idx,
-            'label_to_exclude': label_to_exclude,
             'mode': 'original',
             'main_precision': exp_original.precision(),
             'main_coverage': exp_original.coverage(),
@@ -661,10 +657,7 @@ with open(output_path, "w") as f:
             'num_valid_anchors': len(valid_anchors_original),
             'main_applies': int(main_applies_orig),
             'num_valid_apply': num_valid_apply_orig,
-            # same definition as in the TRUE-label-ALL-neighbors experiment
-            'no_anchor_applies': int((not main_applies_orig) and (num_valid_apply_orig == 0)),
         })
-
 
         # ----------------------------------------------------
         # 8) K-MEDOID MODE
@@ -767,7 +760,6 @@ with open(output_path, "w") as f:
             # Store results 
             results.append({
                 'instance_idx': new_patient_idx,
-                'label_to_exclude': label_to_exclude,
                 'mode': 'medoid',
                 'medoid_id': m_id,  
                 'main_precision': exp_m.precision(),
@@ -778,11 +770,8 @@ with open(output_path, "w") as f:
                 'num_valid_anchors': len(valid_anchors_m),
                 'main_applies': int(main_applies),
                 'num_valid_apply': num_valid_apply,
-                'no_anchor_applies': int((not main_applies) and (num_valid_apply == 0)),
             })
-
             f.write("\n")
-
         # ----------------------------------------------------
         # 8b) UNION-PRUNED FINAL ANCHORS (ACROSS ALL MEDOIDS)
         # ----------------------------------------------------
@@ -792,7 +781,7 @@ with open(output_path, "w") as f:
         coverage_df = subset_new_patient
         flatten_tol = 1e-4
 
-        final_anchors_union, final_union_cov, coverage_trajectory, gain_trajectory = union_prune_anchors(
+        final_anchors_union, final_union_cov, cov_traj_union, gain_traj_union = union_prune_anchors(#, cov_traj_union, gain_traj_union = union_prune_anchors(
             all_medoid_anchors_for_instance,
             coverage_df,
             n_samples=10000,
@@ -801,7 +790,7 @@ with open(output_path, "w") as f:
 
         f.write(f"Union coverage on coverage_df (train_data universe): "
                 f"{final_union_cov:.5f}\n")
-        f.write(f"Flatten tolerance used: {flatten_tol:.4f}\n")
+        f.write(f"Gain threshold used: {flatten_tol:.4f}\n")
 
         if len(final_anchors_union) == 0:
             f.write("  No anchors selected by union pruning.\n\n")
@@ -850,7 +839,7 @@ with open(output_path, "w") as f:
                     num_valid_apply_union += 1
 
             # Log union stats for this instance
-            f.write("UNION MODE (per instance stats):\n")
+            f.write(f"UNION MODE (per instance stats):\n")
             f.write(f"  #final anchors: {len(final_anchors_union)}\n")
             f.write(f"  Main union-anchor precision: {main_prec_union:.3f}\n")
             f.write(f"  Main union-anchor coverage (anchor's coverage): {main_cov_union:.5f}\n")
@@ -867,7 +856,6 @@ with open(output_path, "w") as f:
             # Store union stats in results (mode='union')
             results.append({
                 'instance_idx': new_patient_idx,
-                'label_to_exclude': label_to_exclude,
                 'mode': 'union',
                 'medoid_id': -1,  # not tied to a single medoid
                 'main_precision': main_prec_union,
@@ -878,21 +866,16 @@ with open(output_path, "w") as f:
                 'num_valid_anchors': len(final_anchors_union),
                 'main_applies': main_applies_union,
                 'num_valid_apply': num_valid_apply_union,
-                'no_anchor_applies': int((not main_applies_union) and (num_valid_apply_union == 0)),
+                'coverage_traj': cov_traj_union,
+                'gain_traj': gain_traj_union,
             })
-
 
     # ---------------------------------------------------------
     # 9) GLOBAL STATISTICS ACROSS ALL INSTANCES
     # ---------------------------------------------------------
     f.write("\n" + "=" * 100 + "\n")
-    f.write("GLOBAL STATISTICS ACROSS ALL (INSTANCE, TRUE_LABEL_EXCLUSION) PAIRS\n")
+    f.write("GLOBAL STATISTICS ACROSS ALL CONSIDERED INSTANCES\n")
     f.write("=" * 100 + "\n\n")
-
-    f.write(
-        f"Number of instances with no neighbors' prediction sets excluding TRUE label: "
-        f"{counter_no_ps_excluding_true}\n\n"
-    )
 
     for mode in ['original', 'medoid', 'union']:
         mode_results = [r for r in results if r['mode'] == mode]
@@ -907,10 +890,14 @@ with open(output_path, "w") as f:
         valid_anchors_values = [r['num_valid_anchors'] for r in mode_results]
         main_applies_values = [r['main_applies'] for r in mode_results]
         num_valid_apply_values = [r['num_valid_apply'] for r in mode_results]
-        no_anchor_applies_values = [r['no_anchor_applies'] for r in mode_results]
 
-        count_no_anchor_applies = int(np.sum(no_anchor_applies_values))
-        frac_no_anchor_applies = count_no_anchor_applies / len(mode_results)
+        # How many instances have main anchor applying?
+        count_main_applies = int(np.sum(main_applies_values))
+        frac_main_applies = count_main_applies / len(mode_results)
+
+        # How many instances have at least one valid anchor applying?
+        count_at_least_one_valid = sum(1 for v in num_valid_apply_values if v > 0)
+        frac_at_least_one_valid = count_at_least_one_valid / len(mode_results)
 
         avg_cov, std_cov = np.mean(cov_values), np.std(cov_values)
         avg_prec, std_prec = np.mean(prec_values), np.std(prec_values)
@@ -918,9 +905,7 @@ with open(output_path, "w") as f:
         avg_feats_valid, std_feats_valid = np.mean(feats_values), np.std(feats_values)
         avg_unique_feats_valid, std_unique_feats_valid = np.mean(unique_feats_values), np.std(unique_feats_values)
         avg_num_valid_anchors, std_num_valid_anchors = np.mean(valid_anchors_values), np.std(valid_anchors_values)
-        frac_main_applying = np.mean(main_applies_values)
-        avg_num_valid_apply = np.mean(num_valid_apply_values)
-
+        
         f.write(f"MODE: {mode}\n")
         f.write(f"  Avg main precision: {avg_prec:.4f} (std={std_prec:.4f})\n")
         f.write(f"  Avg main coverage: {avg_cov:.4f} (std={std_cov:.4f})\n")
@@ -928,20 +913,101 @@ with open(output_path, "w") as f:
         f.write(f"  Avg #features per valid anchor: {avg_feats_valid:.4f} (std={std_feats_valid:.4f})\n")
         f.write(f"  Avg #unique features per instance (valid anchors): {avg_unique_feats_valid:.4f} (std={std_unique_feats_valid:.4f})\n")
         f.write(f"  Avg #valid anchors per instance: {avg_num_valid_anchors:.4f} (std={std_num_valid_anchors:.4f})\n")
-        f.write(f"  Fraction of MAIN anchors applying to patient: {frac_main_applying:.4f}\n")
-        f.write(f"  Avg #valid anchors applying to patient: {avg_num_valid_apply:.4f}\n")
         f.write(
-            f"  #instances with NO anchors (main nor any valid) applying to patient: "
-            f"{count_no_anchor_applies} / {len(mode_results)}\n"
+            f"  #instances where MAIN anchor applies: "
+            f"{count_main_applies} / {len(mode_results)} "
+            f"({frac_main_applies:.4f})\n"
         )
         f.write(
-            f"  Fraction of instances with NO anchors applying: "
-            f"{frac_no_anchor_applies:.4f}\n"
+            f"  #instances with ≥1 valid anchor applying: "
+            f"{count_at_least_one_valid} / {len(mode_results)} "
+            f"({frac_at_least_one_valid:.4f})\n"
         )
+
+        if mode == 'medoid':
+            # For each instance, collect the set of medoid_ids that were used
+            medoid_counts = {}
+            for r in mode_results:
+                inst = r['instance_idx']
+                m_id = r.get('medoid_id', None)
+                if m_id is None:
+                    continue
+                if inst not in medoid_counts:
+                    medoid_counts[inst] = set()
+                medoid_counts[inst].add(m_id)
+
+            if medoid_counts:
+                # Number of distinct medoids per instance
+                counts = [len(s) for s in medoid_counts.values()]
+                avg_medoids = np.mean(counts)
+                std_medoids = np.std(counts)
+                min_medoids = int(np.min(counts))
+                max_medoids = int(np.max(counts))
+
+                f.write(
+                    f"  Avg #medoids per instance: {avg_medoids:.4f} "
+                    f"(std={std_medoids:.4f}, min={min_medoids}, max={max_medoids})\n"
+                )
+
         f.write("\n")
 
+        # ---------------------------------------------------------
+        # 10) PLOTS OF UNION COVERAGE FLATTENING
+        # ---------------------------------------------------------
+        union_results = [r for r in results if r['mode'] == 'union' and 'coverage_traj' in r]
 
-end_time = time.time()
-total_time = end_time - start_time
+        if len(union_results) > 0:
+            # Determine max length of trajectories
+            max_len = max(len(r['coverage_traj']) for r in union_results)
+
+            # Build matrix [n_instances x max_len] with NaNs for padding
+            traj_matrix = np.full((len(union_results), max_len), np.nan, dtype=float)
+            for i, r in enumerate(union_results):
+                traj = r['coverage_traj']
+                traj_matrix[i, :len(traj)] = traj
+
+            # Average trajectory (ignore NaNs for shorter ones)
+            mean_traj = np.nanmean(traj_matrix, axis=0)
+            x = np.arange(1, max_len + 1)
+
+            # Plot all trajectories (faint) + mean trajectory (thicker)
+            plt.figure()
+            for i in range(traj_matrix.shape[0]):
+                plt.plot(x, traj_matrix[i, :], alpha=0.2)
+            plt.plot(x, mean_traj, linewidth=2)
+            plt.xlabel("Number of union anchors added")
+            plt.ylabel("Cumulative union coverage (sampled)")
+            plt.title("Union coverage trajectories (flattening behaviour)")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig("union_coverage_flattens_10_bestanchors.png", dpi=200)
+            plt.close()
+
+            # Optional: plot marginal gains
+            max_len_g = max(len(r['gain_traj']) for r in union_results)
+            gain_matrix = np.full((len(union_results), max_len_g), np.nan, dtype=float)
+            for i, r in enumerate(union_results):
+                gtraj = r['gain_traj']
+                gain_matrix[i, :len(gtraj)] = gtraj
+
+            mean_gain = np.nanmean(gain_matrix, axis=0)
+            xg = np.arange(1, max_len_g + 1)
+
+            plt.figure()
+            for i in range(gain_matrix.shape[0]):
+                plt.plot(xg, gain_matrix[i, :], alpha=0.2)
+            plt.plot(xg, mean_gain, linewidth=2)
+            plt.xlabel("Anchor index in union selection order")
+            plt.ylabel("Marginal gain in union coverage")
+            plt.title("Marginal gains of union coverage")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig("union_coverage_gains_10_bestanchors.png", dpi=200)
+            plt.close()
+
+    end_time = time.time()
+    total_time = end_time - start_time
+    f.write(f"\nTotal runtime: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
+
 print(f"\nTotal runtime: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
 print(f"\nDone. Full report saved to: {output_path}")

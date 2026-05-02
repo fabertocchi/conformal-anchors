@@ -25,6 +25,17 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import time
 
+import matplotlib as mpl
+
+mpl.rcParams.update({
+    "font.size": 14,
+    "axes.titlesize": 17,
+    "axes.labelsize": 15,
+    "xtick.labelsize": 13,
+    "ytick.labelsize": 13,
+    "legend.fontsize": 13,
+})
+
 # Reproducibility
 np.random.seed(1)
 rng = np.random.default_rng(1)
@@ -33,7 +44,7 @@ rng = np.random.default_rng(1)
 # Settings
 # -----------------------------
 beam_sizes = [1, 3, 5, 7, 10, 15, 20]#, 25, 30]
-n_instances = 20
+n_instances = 50
 k_neighbors = 100
 alpha = 0.01
 
@@ -236,47 +247,49 @@ with open(output_path, "w") as f:
 print(f"Done. Full report saved to: {output_path}")
 
 # -----------------------------
-# Plot 2: Runtime vs beam size
+# Plot 1: Coverage vs beam size
 # -----------------------------
 plt.figure(figsize=(7, 5))
 
-max_traces_rt = max(len(runtime_by_beam[b]) for b in beam_sizes)
-for i in range(max_traces_rt):
+# individual traces (light)
+max_traces = max(len(coverage_by_beam[b]) for b in beam_sizes)
+for i in range(max_traces):
     y = []
     ok = True
     for b in beam_sizes:
-        if i >= len(runtime_by_beam[b]):
+        if i >= len(coverage_by_beam[b]):
             ok = False
             break
-        y.append(runtime_by_beam[b][i])
+        y.append(coverage_by_beam[b][i])
     if ok:
-        plt.plot(beam_sizes, y, alpha=0.15)
+        plt.plot(beam_sizes, y, alpha=0.2)
 
-plt.plot(beam_sizes, mean_rt, marker='o', linewidth=2, label='Mean runtime')
+# mean curve
+plt.plot(beam_sizes, mean_cov, marker='o', linewidth=2, label='Mean coverage')
 
 # ---- AXIS CUSTOMIZATION ----
-plt.xticks(beam_sizes)  # discrete beam sizes only
-
-# runtime axis with more resolution
-max_runtime = max(mean_rt) if len(mean_rt) > 0 else 1
-plt.yticks(np.linspace(0, max_runtime, 10))  # 10 evenly spaced ticks
-plt.ylim(0, max_runtime * 1.05)
+plt.xlim(1, 20)
+plt.xticks(np.arange(1, 21, 1))                 # show 1..20 on x-axis
+plt.yticks(np.arange(0, 1.01, 0.1))             # coverage ticks every 0.1
+# plt.ylim(0, 1)
+plt.ylim(0, 0.7)
 
 plt.xlabel("Beam size B")
-plt.ylabel("Runtime per explanation (seconds)")
-plt.title("Runtime vs Beam size (Original mode)")
+plt.ylabel("Coverage of main anchor")
+plt.title("Coverage vs Beam size (One-shot mode)")
 plt.grid(True, linestyle="--", alpha=0.6)
 plt.legend()
 plt.tight_layout()
-plt.savefig("runtime_vs_beamsize_original.png", dpi=200)
+plt.savefig("coverage_vs_beamsize_oneshot_final.pdf")
 plt.show()
 
 
 # -----------------------------
-# Plot 2: Runtime vs beam size
+# Plot 2: Runtime vs Beam size (0–15 seconds)
 # -----------------------------
 plt.figure(figsize=(7, 5))
 
+# individual traces (light)
 max_traces_rt = max(len(runtime_by_beam[b]) for b in beam_sizes)
 for i in range(max_traces_rt):
     y = []
@@ -287,23 +300,78 @@ for i in range(max_traces_rt):
             break
         y.append(runtime_by_beam[b][i])
     if ok:
-        plt.plot(beam_sizes, y, alpha=0.15)
+        plt.plot(beam_sizes, y, alpha=0.2)
 
+# mean curve
 plt.plot(beam_sizes, mean_rt, marker='o', linewidth=2, label='Mean runtime')
 
 # ---- AXIS CUSTOMIZATION ----
-plt.xticks(beam_sizes)  # discrete beam sizes only
-
-# runtime axis with more resolution
-max_runtime = max(mean_rt) if len(mean_rt) > 0 else 1
-plt.yticks(np.linspace(0, max_runtime, 10))  # 10 evenly spaced ticks
-plt.ylim(0, max_runtime * 1.05)
+plt.xlim(1, 20)
+plt.xticks(np.arange(1, 21, 1))                 # show 1..20 on x-axis
+plt.yticks(np.arange(0, 21, 1))                 # ticks every 1 second
+plt.ylim(0, 20)
 
 plt.xlabel("Beam size B")
 plt.ylabel("Runtime per explanation (seconds)")
-plt.title("Runtime vs Beam size (Original mode)")
+plt.title("Runtime vs Beam size (One-shot mode)")
 plt.grid(True, linestyle="--", alpha=0.6)
 plt.legend()
 plt.tight_layout()
-plt.savefig("runtime_vs_beamsize_original.png", dpi=200)
+plt.savefig("runtime_vs_beamsize_oneshot_final_new.pdf")
+plt.show()
+
+
+# -----------------------------
+# Plot 3: Trade-off (Coverage vs Runtime)
+# Each point is a beam size B
+# -----------------------------
+plt.figure(figsize=(7, 5))
+
+mean_cov_arr = np.array(mean_cov, dtype=float)
+mean_rt_arr = np.array(mean_rt, dtype=float)
+beam_arr = np.array(beam_sizes, dtype=int)
+
+# line + points (ordered by beam size already)
+plt.plot(mean_rt_arr, mean_cov_arr, marker='o', linewidth=2)
+
+for i, (b, x, y) in enumerate(zip(beam_arr, mean_rt_arr, mean_cov_arr)):
+    if i < len(mean_cov_arr) - 1:
+        slope = mean_cov_arr[i+1] - y
+    else:
+        slope = y - mean_cov_arr[i-1]
+
+    if slope >= 0:
+        offset = (6, 8)
+        va = 'bottom'
+    else:
+        offset = (6, -10)
+        va = 'top'
+
+    plt.annotate(
+        f"B={b}",
+        (x, y),
+        textcoords="offset points",
+        xytext=offset,
+        ha='left',
+        va=va,
+        fontsize=9
+    )
+
+
+# # annotate each point with its B
+# for b, x, y in zip(beam_arr, mean_rt_arr, mean_cov_arr):
+#     plt.annotate(f"B={b}", (x, y), textcoords="offset points", xytext=(6, 6), ha='left', fontsize=9)
+
+# optional: make axes nicer
+plt.yticks(np.arange(0, 1.01, 0.1))
+# plt.ylim(0, 1)
+plt.ylim(0, 0.7)
+plt.xticks(np.arange(1, 12, 1)) 
+
+plt.xlabel("Mean runtime per explanation (seconds)")
+plt.ylabel("Mean coverage of main anchor")
+plt.title("Coverage–runtime trade-off across beam sizes", pad=20)
+plt.grid(True, linestyle="--", alpha=0.6)
+plt.tight_layout()
+plt.savefig("tradeoff_coverage_vs_runtime_final.pdf")
 plt.show()

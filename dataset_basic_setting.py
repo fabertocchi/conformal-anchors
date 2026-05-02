@@ -59,7 +59,7 @@ STOMACH_TESTS = sorted({t for d, info in TESTS.items() if info['group'] == 'Stom
 # Definition of 'healthy' ranges for each test, used when injecting cross-group healthy tests
 HEALTHY_RANGES = {
     'pulmonary_function': (85, 100),          
-    'sputum_neutrophil_percent': (10, 50),   
+    'sputum_neutrophil_percent': (20, 50),   
     'wbc_count': (4500, 9000),                
     'hemoglobin': (12.5, 16.5),               # sex-agnostic mid-normal range  
     'gastric_ph': (1.5, 3.5),                     
@@ -450,6 +450,36 @@ def generate_patient_data():
 
     return df
 
+def fill_cross_group_tests_with_healthy(df):
+    """
+    Take an already-generated dataset (with NaNs for cross-group tests)
+    and fill ONLY those NaNs with healthy values, without changing
+    any existing (non-NaN) test values.
+    """
+    # We reuse the same HEALTHY_RANGES and ORDINAL_TESTS
+
+    def sample_healthy_value_for_df(test_name):
+        low, high = HEALTHY_RANGES[test_name]
+        if test_name in ORDINAL_TESTS:
+            return random.randint(int(low), int(high))
+        else:
+            return random.uniform(float(low), float(high))
+
+    # We assume 'disease_group' column exists and is 'Lung' or 'Stomach'
+    for idx, row in df.iterrows():
+        group = row["disease_group"]
+
+        if group == "Lung":
+            cross_tests = STOMACH_TESTS
+        else:
+            cross_tests = LUNG_TESTS
+
+        for tname in cross_tests:
+            if pd.isna(row[tname]):
+                df.at[idx, tname] = sample_healthy_value_for_df(tname)
+
+    return df
+
 
 if __name__ == "__main__":
 
@@ -465,7 +495,8 @@ if __name__ == "__main__":
 
     # Version 2: using TESTS from tests_v2
     df = generate_patient_data()
-    df.to_csv('generated_datasets/synthetic_patient_basic_setting_v2.csv', index=False)
+    df = fill_cross_group_tests_with_healthy(df)
+    df.to_csv('generated_datasets/synthetic_patient_basic_setting_v2_newnew_new.csv', index=False)
     
     # Display basic info
     print("\nDataset shape:", df.shape)

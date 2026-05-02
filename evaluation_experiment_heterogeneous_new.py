@@ -78,6 +78,32 @@ for col in X_train.columns:
 
 GENERIC_SYMPTOMS_SET = set(generic_symptoms_cols)
 
+def inject_generic_missingness(df, generic_cols):
+    """
+    For each row:
+      - if it has 0 NaNs in generic_cols -> set 2 random generic_cols to NaN
+      - if it has 1 NaN in generic_cols -> set 1 more generic_col to NaN
+      - if it has >=2 NaNs -> leave as is.
+    Returns a modified copy of df.
+    """
+    df_mod = df.copy()
+    for idx, row in df_mod.iterrows():
+        g = row[generic_cols]
+        n_missing = g.isna().sum()
+
+        if n_missing == 0:
+            cols_to_nan = np.random.choice(generic_cols, size=2, replace=False)
+        elif n_missing == 1:
+            available = [c for c in generic_cols if not pd.isna(row[c])]
+            if len(available) == 0:
+                continue
+            cols_to_nan = np.random.choice(available, size=1, replace=False)
+        else:
+            continue
+
+        df_mod.loc[idx, cols_to_nan] = np.nan
+    return df_mod
+
 def filter_predicates_excluding_generic_symptoms(predicate_names, generic_set=GENERIC_SYMPTOMS_SET):
     """
     Keep only predicates whose feature is NOT a generic symptom.
@@ -295,7 +321,7 @@ def compute_resampled_precision(
     label_to_exclude,
     n_samples=N_SAMPLES_PROCEDURAL,
     generic_symptoms_set=GENERIC_SYMPTOMS_SET,
-):
+    ):
     """
     Deterministic version (no resampling), BUT:
     - We compute the effective set of neighbors using ONLY diagnostic-test predicates
@@ -583,9 +609,9 @@ start_time = time.time()
 # EXPERIMENT SETTINGS
 # ---------------------------------------------------------
 # k-NN subsets are precomputed once from full test set
-all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
-    X_test, X_anchors, y_anchors, k=100
-)
+# all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
+#     X_test, X_anchors, y_anchors, k=100
+# )
 
 n_instances = 100
 n_instances = min(n_instances, len(X_test))   # safety
@@ -604,7 +630,7 @@ ALL_ANCHOR_DELTAS = {
     'union2': [],
 }
 
-output_path = f"improved_anchor_experiment_results_full_framework_procedural_10_7_correct_group_nosympt_new_onlyplot_{time.time()}.txt"
+output_path = f"improved_anchor_experiment_results_full_framework_procedural_10_7_heterogeneous_group_nosympt_new_{time.time()}.txt"
 
 labels_stomach = [1, 5, 6, 7, 8]
 labels_lung = [0, 2, 3, 4, 9]
@@ -626,18 +652,57 @@ with open(output_path, "w") as f:
         # -----------------------------
         # 1) BASIC INSTANCE INFO
         # -----------------------------
-        new_patient = X_test.iloc[new_patient_idx]
+        # new_patient = X_test.iloc[new_patient_idx]
+        # new_patient_true_label = y_test.iloc[new_patient_idx]
+        # new_patient_pred = xgb_cl.predict(new_patient.values.reshape(1, -1))[0]
+
+        # f.write(f"True label: {new_patient_true_label} ({categories[new_patient_true_label]})\n")
+        # f.write(f"Predicted label: {new_patient_pred} ({categories[new_patient_pred]})\n\n")
+
+        # subset_new_patient = all_subsets[new_patient_idx]
+        # y_subset_new_patient = y_subsets[new_patient_idx]
+
+        # subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
+        # y_subset_new_patient_raw = y_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
+
+        # Fully observed patient (reference)
+        orig_patient = X_test.iloc[new_patient_idx].copy()
         new_patient_true_label = y_test.iloc[new_patient_idx]
+        # new_patient_pred = xgb_cl.predict(orig_patient.values.reshape(1, -1))[0]
+        
+        # Inject heterogeneity ONLY in the test instance (generic symptoms)
+        new_patient = orig_patient.copy()
+        g = new_patient[generic_symptoms_cols]
+        n_missing = g.isna().sum()
+
+        if n_missing == 0:
+            cols_to_nan = np.random.choice(generic_symptoms_cols, size=2, replace=False)
+            new_patient[cols_to_nan] = np.nan
+        elif n_missing == 1:
+            available = [c for c in generic_symptoms_cols if not pd.isna(new_patient[c])]
+            if len(available) > 0:
+                col_to_nan = np.random.choice(available, size=1, replace=False)
+                new_patient[col_to_nan] = np.nan
+        # else: already >=2 NaNs -> leave as is
         new_patient_pred = xgb_cl.predict(new_patient.values.reshape(1, -1))[0]
+
 
         f.write(f"True label: {new_patient_true_label} ({categories[new_patient_true_label]})\n")
         f.write(f"Predicted label: {new_patient_pred} ({categories[new_patient_pred]})\n\n")
 
-        subset_new_patient = all_subsets[new_patient_idx]
-        y_subset_new_patient = y_subsets[new_patient_idx]
+        # Recompute kNN neighborhood using the NaN-imputed test instance
+        new_patient_df = pd.DataFrame([new_patient], columns=X_test.columns)
 
-        subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
-        y_subset_new_patient_raw = y_anchors_orig.iloc[indices_neighbors[new_patient_idx]].reset_index(drop=True)
+        subsets_list, y_subsets_list, similarities_list, indices_neighbors_list = get_knn_subsets(
+            new_patient_df, X_anchors, y_anchors, k=100
+        )
+
+        subset_new_patient = subsets_list[0]             # neighbors (binned) - DO NOT inject missingness here
+        y_subset_new_patient = y_subsets_list[0]
+        indices_neighbors = indices_neighbors_list[0]    # indices into *_orig pools
+
+        subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors].reset_index(drop=True)
+        y_subset_new_patient_raw = y_anchors_orig.iloc[indices_neighbors].reset_index(drop=True)
 
         # -----------------------------
         # 2) CONFORMAL PREDICTION SETS
@@ -1764,7 +1829,7 @@ with open(output_path, "w") as f:
 
         plt.figure(figsize=(5,5))
         for i in range(traj_matrix.shape[0]):
-            plt.plot(x, traj_matrix[i, :], alpha=0.2)
+            plt.plot(x, traj_matrix[i, :], alpha=0.3)
         plt.plot(x, mean_traj, linewidth=2)
         plt.xlabel("Number of union anchors added")
         plt.ylabel("Cumulative union coverage")
@@ -1787,7 +1852,7 @@ with open(output_path, "w") as f:
 
         plt.figure(figsize=(5,5))
         for i in range(gain_matrix.shape[0]):
-            plt.plot(xg, gain_matrix[i, :], alpha=0.2)
+            plt.plot(xg, gain_matrix[i, :], alpha=0.3)
         plt.plot(xg, mean_gain, linewidth=2)
         plt.xlabel("Anchor index in union selection order")
         plt.ylabel("Marginal gain in union coverage")
