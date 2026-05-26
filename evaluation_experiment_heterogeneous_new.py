@@ -906,7 +906,7 @@ with open(output_path, "w") as f:
         exp_original, valid_anchors_original = explainer_orig.explain_instance(
             anchor_instance, xgb_cl, mode="conformal",
             query_label=label_to_exclude, qhat=qhat,
-            threshold=0.95, delta=0.1, tau=0.15, beam_size=beam_size,
+            threshold=0.95, delta=0.01, tau=0.15, beam_size=beam_size,
         )
 
         runtime_orig = time.time() - t0_mode
@@ -1057,7 +1057,7 @@ with open(output_path, "w") as f:
             query_label=label_to_exclude,
             qhat=qhat,
             threshold=0.95,
-            delta=0.1,
+            delta=0.01,
             tau=0.15,
             beam_size=beam_size,
             # assuming your AnchorTabularExplainer supports this:
@@ -1210,7 +1210,7 @@ with open(output_path, "w") as f:
                 query_label=label_to_exclude,
                 qhat=qhat,
                 threshold=0.95,
-                delta=0.1,
+                delta=0.01,
                 tau=0.15,
                 beam_size=7
             )
