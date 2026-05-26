@@ -8,10 +8,10 @@ version = "0.1.0"
 description = "Multi-label medical diagnosis explainability with conformal prediction and anchors"
 requires-python = ">=3.12"
 dependencies = [
-    "numpy>=2.2",
-    "pandas>=2.2",
-    "scikit-learn>=1.4",
-    "scipy>=1.13",
+    "numpy==1.26.4",
+    "pandas>=2.2,<3.0",
+    "scikit-learn>=1.4,<1.6",
+    "scipy>=1.13,<1.14",
     "matplotlib>=3.8",
     "xgboost>=2.0",
     "scikit-learn-extra>=0.3",
@@ -20,6 +20,3 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["anchor*", "data*", "experiments*", "results*", "generated_datasets*"]
-
-# The local anchor package must be installed separately:
-#   pip install ./anchor

@@ -13,12 +13,8 @@ conda activate conformal-anchors
 
 ### 2. Install dependencies
 
+Install the project in editable mode. This also adds the project root to `sys.path`, which is required for the `anchor` package to be resolved correctly.
+
 ```bash
 pip install -e .
-```
-
-### 3. Install the local anchor package
-
-```bash
-pip install ./anchor
 ```
