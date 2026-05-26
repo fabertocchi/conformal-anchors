@@ -488,7 +488,7 @@ class AnchorTabularExplainer(object):
         return sample_fn, mapping
 
     def explain_instance(self, data_row, classifier, mode="standard", query_label=None, qhat=None, threshold=0.95,
-                          delta=0.1, tau=0.15, batch_size=100,
+                          delta=0.01, tau=0.15, batch_size=100,
                           max_anchor_size=None, desired_label=None, beam_size=10, predicate_mode="original", mean_instances=None, **kwargs):
         """Run the Anchor beam search on ``data_row`` and package the result."""
         

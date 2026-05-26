@@ -1,23 +1,40 @@
 # ---------------------------------------------------------
-# IMPROVED Experiment: Exclude TRUE label (NO missingness)
-# Modes:
-#   - original
-#   - mean-instances
-#   - medoid (K-Medoids, RAW Gower)
-#   - union pruning mode 1 (max marginal gain)
-#   - union pruning mode 2 (sorted by individual coverage)
+# Experiment: true-label exclusion under no additional missingness
+# ---------------------------------------------------------
 #
-# Also logs: average precision over ALL valid anchors (not only main)
+# This script evaluates the conformal-anchor framework in a stress-test setting
+# where the target label to exclude is the true label of each test instance.
+#
+# For each selected test patient:
+#   1. build a local neighborhood of k = 100 nearest anchor-set instances;
+#   2. compute conformal prediction sets for the neighbors;
+#   3. retain the neighbors whose prediction sets exclude the patient's true label;
+#   4. generate conformal anchors explaining the exclusion of the true label;
+#   5. compare five construction modes:
+#        - original mode;
+#        - mean-instances mode;
+#        - medoid mode based on K-Medoids with raw Gower distance;
+#        - union pruning mode 1, selecting anchors by maximum marginal union coverage gain;
+#        - union pruning mode 2, selecting anchors by decreasing individual coverage.
+#
+# The experiment records, for each mode:
+#   - main-anchor precision and coverage;
+#   - cumulative / union coverage;
+#   - average precision over all valid anchors;
+#   - number of valid anchors and involved features;
+#   - whether the main anchor or any valid/selected anchor applies to the
+#     original patient.
+#
+# This run uses no additional missingness injection. Missing values already
+# present in the patient are treated as not satisfying anchor predicates.
 # ---------------------------------------------------------
 
 from anchor.anchor.anchor_tabular import AnchorTabularExplainer
 from model_training import (
-    X_train, y_train, X_conf_pred, y_conf_pred,
+    X_train, X_conf_pred, y_conf_pred,
     X_anchors, y_anchors, X_test, y_test,
-    X_train_orig, y_train_orig,
-    X_conf_pred_orig, y_conf_pred_orig,
+    X_train_orig,
     X_anchors_orig, y_anchors_orig,
-    X_test_orig, y_test_orig,
     categories
 )
 import xgboost as xgb
@@ -30,102 +47,39 @@ from sklearn_extra.cluster import KMedoids
 import pandas as pd
 import numpy as np
 import time
-import json
 
 np.random.seed(1)
 
-HEALTHY_RANGES = {
-    'pulmonary_function': (85, 100),
-    'sputum_neutrophil_percent': (10, 50),
-    'wbc_count': (4500, 9000),
-    'hemoglobin': (12.5, 16.5),       # sex-agnostic mid-normal range
-    'gastric_ph': (1.5, 3.5),
-    'chest_xray_score': (0, 1),       # clear / minimal findings
-    'endoscopy_score': (0, 1),
-    'h_pylori_level': (0, 1),
-}
-
-# def anchor_applies_to_instance(predicate_names, patient_series, use_healthy_for_nan=False):
-#     """
-#     predicate_names: list of strings like
-#         "pulmonary_function > 54.50", "chest_xray_score ≤ 0.00", ...
-#     patient_series: pandas Series, features indexed by column name.
-
-#     use_healthy_for_nan:
-#         - If False (default): if x is NaN, the condition is NOT satisfied (old behavior).
-#         - If True: if x is NaN *and* the feature is in HEALTHY_RANGES, a healthy
-#           value is sampled in the given range and used in the comparison.
-
-#     Returns True if ALL predicates are satisfied by the (possibly imputed) values.
-#     """
-#     for cond in predicate_names:
-#         cond = cond.strip()
-
-#         # Determine operator and split
-#         if "≤" in cond:
-#             feature, thresh = cond.split("≤", 1)
-#             op = "leq"
-#         elif "<=" in cond:
-#             feature, thresh = cond.split("<=", 1)
-#             op = "leq"
-#         elif ">" in cond:
-#             feature, thresh = cond.split(">", 1)
-#             op = "gt"
-#         elif "=" in cond:
-#             feature, thresh = cond.split("=", 1)
-#             op = "eq"
-#         else:
-#             # Unknown pattern -> be conservative: treat as not satisfied
-#             return False
-
-#         feature = feature.strip()
-#         thresh = thresh.strip()
-
-#         if feature not in patient_series.index:
-#             return False
-
-#         x = patient_series[feature]
-
-#         # Handle missing values
-#         if pd.isna(x):
-#             # If requested and we know a healthy range for this feature,
-#             # sample a healthy value and continue.
-#             if use_healthy_for_nan and feature in HEALTHY_RANGES:
-#                 low, high = HEALTHY_RANGES[feature]
-#                 x = (high - low)/2
-#                 #x = np.random.uniform(low, high)
-#             else:
-#                 # Old behavior: condition not satisfied
-#                 return False
-
-#         # Try to interpret threshold as numeric
-#         try:
-#             t_val = float(thresh)
-#             numeric = True
-#         except ValueError:
-#             numeric = False
-
-#         if op == "leq":
-#             if not numeric or not (x <= t_val):
-#                 return False
-#         elif op == "gt":
-#             if not numeric or not (x > t_val):
-#                 return False
-#         elif op == "eq":
-#             if numeric:
-#                 if not (abs(x - t_val) < 1e-20):
-#                     return False
-#             else:
-#                 if str(x) != thresh:
-#                     return False
-#         else:
-#             return False
-
-#     return True
-
 # ---------------------------------------------------------
-# Helpers
+# Helper functions overview
 # ---------------------------------------------------------
+#
+# anchor_applies_to_instance:
+#   Checks whether all predicates of an anchor are satisfied by a patient.
+#   Missing values are treated as predicate failures.
+#
+# gower_distance_to_all_raw:
+#   Computes raw-space Gower distances between one point and a set of points.
+#
+# compute_gower_distance_matrix_raw:
+#   Builds the pairwise raw-space Gower distance matrix used by K-Medoids.
+#
+# union_prune_anchors_mode1:
+#   Greedy union-pruning strategy. At each step, selects the anchor with the
+#   largest marginal increase in union coverage.
+#
+# union_prune_anchors_mode2:
+#   Simpler union-pruning strategy. Sorts anchors by individual coverage and
+#   keeps adding anchors while union coverage still increases enough.
+#
+# extract_feature_name:
+#   Extracts the feature name from a predicate string.
+#
+# valid_anchor_stats:
+#   Computes summary statistics over all valid anchors returned by the anchor
+#   search procedure.
+# ---------------------------------------------------------
+
 def anchor_applies_to_instance(predicate_names, patient_series):
     for cond in predicate_names:
         cond = cond.strip()
@@ -346,7 +300,6 @@ xgb_cl = xgb.XGBClassifier()
 xgb_cl.load_model("xgb_model.json")
 class_names = xgb_cl.classes_
 
-
 # ---------------------------------------------------------
 # EXPERIMENT SETTINGS
 # ---------------------------------------------------------
@@ -354,8 +307,10 @@ start_time = time.time()
 
 n_instances = 200
 n_instances = min(n_instances, len(X_test))
-beam_size = 1
+beam_size = 10 #1
+beam_size_medoid = 7
 alpha = 0.01
+delta = 0.01
 
 # Use standard kNN subsets computed on full X_test
 all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
@@ -365,7 +320,12 @@ all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
 selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
 
 results = []
-output_path = "experiment_exclude_TRUE_label_all_modes_NO_missing_1_new_max.txt"
+output_path = (
+    f"experiment_exclude_TRUE_label_all_modes_NO_missing_"
+    f"{beam_size}_{beam_size_medoid}_new_max_"
+    f"delta{str(delta).replace('.', '_')}_"
+    f"{n_instances}instances.txt"
+)
 
 with open(output_path, "w") as f:
     f.write("EXPERIMENT: Exclude TRUE label\n")
@@ -394,7 +354,7 @@ with open(output_path, "w") as f:
         f.write(f"Pred label: {pred_label} ({categories[pred_label]})\n\n")
 
         # -----------------------------
-        # 2) subset for this patient
+        # 2) local neighborhood construction
         # -----------------------------
         subset_new_patient = all_subsets[new_patient_idx]
         y_subset_new_patient = y_subsets[new_patient_idx]
@@ -541,7 +501,7 @@ with open(output_path, "w") as f:
             mode="conformal",
             query_label=label_to_exclude,
             qhat=qhat,
-            threshold=0.95, delta=0.1, tau=0.15,
+            threshold=0.95, delta=delta, tau=0.15,
             beam_size=beam_size,
             predicate_mode="original",
             mean_instances=None
@@ -583,7 +543,7 @@ with open(output_path, "w") as f:
             mode="conformal",
             query_label=label_to_exclude,
             qhat=qhat,
-            threshold=0.95, delta=0.1, tau=0.15,
+            threshold=0.95, delta=delta, tau=0.15,
             beam_size=beam_size,
             predicate_mode="mean_instances",
             mean_instances=mean_instances_binned_df.to_numpy()
@@ -629,8 +589,8 @@ with open(output_path, "w") as f:
                 mode="conformal",
                 query_label=label_to_exclude,
                 qhat=qhat,
-                threshold=0.95, delta=0.1, tau=0.15,
-                beam_size=beam_size,#7
+                threshold=0.95, delta=delta, tau=0.15,
+                beam_size=beam_size_medoid,
                 predicate_mode="medoid",
                 mean_instances=None
             )

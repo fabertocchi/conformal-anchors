@@ -1,11 +1,11 @@
 # ---------------------------------------------------------
 # COVERAGE vs BEAM SIZE (NO SYMPTOM HIDING, NO APPLICABILITY)
+# Target patients sampled from the anchor set
+#
 # Plots one curve per mode:
-#  - Original
-#  - Mean-instances
-#  - Medoid (avg across medoids)
-#  - Union pruning mode 1 (final union coverage)
-#  - Union pruning mode 2 (final union coverage)
+#  - Original mode: cumulative / union coverage
+#  - Union pruning mode 1: final union coverage
+#  - Union pruning mode 2: final union coverage
 # ---------------------------------------------------------
 
 from anchor.anchor.anchor_tabular import AnchorTabularExplainer
@@ -41,12 +41,13 @@ rng = np.random.RandomState(GLOBAL_SEED)
 # =========================
 # Experiment settings
 # =========================
-beam_sizes = [1, 3, 5, 7, 10, 15, 20, 25]
+beam_sizes = [1, 3, 5, 7, 10, 12, 15]
 ALPHA = 0.01
+DELTA = 0.01
 K_NEIGHBORS = 100
 
-N_TEST_INSTANCES = 1      # average over these many patients
-N_LABELS_PER_INSTANCE = 5   # sample labels-to-exclude per patient; set None for all labels
+N_ANCHOR_INSTANCES = 50     # average over these many patients
+N_LABELS_PER_INSTANCE = 1   # sample labels-to-exclude per patient; set None for all labels
 
 # Union pruning params
 UNION_SAMPLES = 10000
@@ -57,6 +58,9 @@ generic_symptoms_cols = [
     'fever_severity', 'cough_severity', 'chest_pain_severity',
     'abdominal_pain_severity', 'fatigue_level', 'nausea'
 ]
+
+labels_stomach = [1, 5, 6, 7, 8]
+labels_lung = [0, 2, 3, 4, 9]
 
 # ---------------------------------------------------------
 # Helper: anchor applies (needed only for union pruning)
@@ -233,39 +237,71 @@ def union_prune_anchors_mode2(anchors, coverage_df, n_samples=10000, flatten_tol
 # ---------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------
-def safe_mean(vals):
-    vals = [v for v in vals if v is not None and not np.isnan(v)]
-    return float(np.mean(vals)) if len(vals) else np.nan
 
-def safe_std(vals):
-    vals = [v for v in vals if v is not None and not np.isnan(v)]
-    return float(np.std(vals)) if len(vals) else np.nan
+def sample_same_group_labels(true_label, n=1):
+    """
+    Sample labels from the same disease group as the true label,
+    excluding the true label itself.
+    """
+    true_label = int(true_label)
 
-def sample_labels(class_names, n=None):
-    labels = [int(l) for l in class_names]
-    if n is None or n >= len(labels):
-        return labels
-    return list(rng.choice(labels, size=n, replace=False))
+    if true_label in labels_lung:
+        group = labels_lung
+    elif true_label in labels_stomach:
+        group = labels_stomach
+    else:
+        return []
+
+    candidates = [int(l) for l in group if int(l) != true_label]
+
+    if len(candidates) == 0:
+        return []
+
+    if n is None or n >= len(candidates):
+        return candidates
+
+    return list(rng.choice(candidates, size=n, replace=False))
 
 
 # ---------------------------------------------------------
 # Run one (patient, label) at one beam size
 # ---------------------------------------------------------
 def run_one_pair_at_beam(new_patient_idx, label_to_exclude, beam_size, xgb_cl, class_names):
-    # patient is NOT modified
-    new_patient = X_test.iloc[new_patient_idx].copy()
+    new_patient = X_anchors.iloc[new_patient_idx].copy()
     new_patient_df = new_patient.to_frame().T
     new_patient_df.index = [new_patient_idx]
 
     # kNN subset around THIS patient
+    # subsets_list, y_subsets_list, similarities_list, indices_neighbors_list = get_knn_subsets(
+    #     new_patient_df, X_anchors, y_anchors, k=K_NEIGHBORS
+    # )
+    # subset_new_patient = subsets_list[0]          # binned
+    # y_subset_new_patient = y_subsets_list[0]
+    # indices_neighbors = indices_neighbors_list[0]
+
+    # subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors].reset_index(drop=True)
+
+    # Remove the target patient from the anchor set before kNN search
+    keep_mask = np.ones(len(X_anchors), dtype=bool)
+    keep_mask[new_patient_idx] = False
+
+    X_anchors_without_target = X_anchors.iloc[keep_mask].reset_index(drop=True)
+    y_anchors_without_target = y_anchors.iloc[keep_mask].reset_index(drop=True)
+    X_anchors_orig_without_target = X_anchors_orig.iloc[keep_mask].reset_index(drop=True)
+
+    # kNN subset around THIS patient, among anchor-set patients excluding the target
     subsets_list, y_subsets_list, similarities_list, indices_neighbors_list = get_knn_subsets(
-        new_patient_df, X_anchors, y_anchors, k=K_NEIGHBORS
+        new_patient_df,
+        X_anchors_without_target,
+        y_anchors_without_target,
+        k=K_NEIGHBORS
     )
+
     subset_new_patient = subsets_list[0]          # binned
     y_subset_new_patient = y_subsets_list[0]
     indices_neighbors = indices_neighbors_list[0]
 
-    subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors].reset_index(drop=True)
+    subset_new_patient_raw = X_anchors_orig_without_target.iloc[indices_neighbors].reset_index(drop=True)
 
     # conformal sets on neighbors
     prediction_sets, qhat = compute_conformal_prediction_set_batch(
@@ -276,7 +312,7 @@ def run_one_pair_at_beam(new_patient_idx, label_to_exclude, beam_size, xgb_cl, c
     # neighbors whose pred set excludes label_to_exclude
     idxs_excl = [i for i, ps in enumerate(pred_sets_names) if label_to_exclude not in ps]
     if len(idxs_excl) == 0:
-        return {"original": np.nan, "mean": np.nan, "medoid": np.nan, "union1": np.nan, "union2": np.nan}
+        return {"original": np.nan, "union1": np.nan, "union2": np.nan}
 
     neighbors_excl = subset_new_patient.iloc[idxs_excl]
     neighbors_excl_raw = subset_new_patient_raw.iloc[idxs_excl]
@@ -288,7 +324,6 @@ def run_one_pair_at_beam(new_patient_idx, label_to_exclude, beam_size, xgb_cl, c
     anchor_row = subset_new_patient.loc[idx_example_to_anchor].copy()
     anchor_instance = anchor_row.to_numpy()
 
-    # mean-instances (raw means by label -> bin)
     mean_instances_raw = []
     for lab in unique_labels:
         mask_lab = (neighbors_labels == lab)
@@ -296,21 +331,13 @@ def run_one_pair_at_beam(new_patient_idx, label_to_exclude, beam_size, xgb_cl, c
         mean_instances_raw.append(cluster.mean(axis=0))
     mean_instances_raw = np.vstack(mean_instances_raw)
 
-    mean_instances_df = pd.DataFrame(mean_instances_raw, columns=X_train_orig.columns)
-    mean_instances_binned_df = bin_dataset(
-        mean_instances_df,
-        TESTS=TESTS,
-        generic_symptoms_cols=generic_symptoms_cols,
-        verbose=False
-    )
-
     # k-medoids on RAW neighbors_excl_raw with raw gower
     X_cluster_raw_df = neighbors_excl_raw.reset_index(drop=True)
     X_cluster_raw = X_cluster_raw_df.to_numpy(dtype=float)
     feature_names_raw = X_cluster_raw_df.columns.tolist()
 
     if X_cluster_raw.shape[0] < 2 or len(unique_labels) < 1:
-        return {"original": np.nan, "mean": np.nan, "medoid": np.nan, "union1": np.nan, "union2": np.nan}
+        return {"original": np.nan, "union1": np.nan, "union2": np.nan}
 
     D = compute_gower_distance_matrix_raw(
         X_cluster_raw,
@@ -340,7 +367,7 @@ def run_one_pair_at_beam(new_patient_idx, label_to_exclude, beam_size, xgb_cl, c
 
     k = len(init_medoids)
     if k < 1 or k > D.shape[0]:
-        return {"original": np.nan, "mean": np.nan, "medoid": np.nan, "union1": np.nan, "union2": np.nan}
+        return {"original": np.nan, "union1": np.nan, "union2": np.nan}
 
     init_matrix = D[init_medoids, :]
 
@@ -393,32 +420,15 @@ def run_one_pair_at_beam(new_patient_idx, label_to_exclude, beam_size, xgb_cl, c
         query_label=label_to_exclude,
         qhat=qhat,
         threshold=0.95,
-        delta=0.1,
+        delta=DELTA,
         tau=0.15,
         beam_size=beam_size,
         predicate_mode="original",
         mean_instances=None
     )
-    cov_original = float(exp_original.coverage())
-
-    # MEAN
-    exp_mean, _ = explainer_orig.explain_instance(
-        anchor_instance,
-        xgb_cl,
-        mode="conformal",
-        query_label=label_to_exclude,
-        qhat=qhat,
-        threshold=0.95,
-        delta=0.1,
-        tau=0.15,
-        beam_size=beam_size,
-        predicate_mode="mean_instances",
-        mean_instances=mean_instances_binned_df.to_numpy()
-    )
-    cov_mean = float(exp_mean.coverage())
+    cov_original = float(exp_original.cumulative_coverage())
 
     # MEDOID + collect anchors for union
-    medoid_main_covs = []
     all_medoid_anchors_for_union = []
 
     for m_id, medoid_instance in enumerate(final_medoids_binned, 1):
@@ -429,14 +439,12 @@ def run_one_pair_at_beam(new_patient_idx, label_to_exclude, beam_size, xgb_cl, c
             query_label=label_to_exclude,
             qhat=qhat,
             threshold=0.95,
-            delta=0.1,
+            delta=DELTA,
             tau=0.15,
             beam_size=beam_size,
             predicate_mode="medoid",
             mean_instances=None
         )
-
-        medoid_main_covs.append(float(exp_m.coverage()))
 
         # collect valid anchors
         for va in valid_anchors_m:
@@ -459,8 +467,6 @@ def run_one_pair_at_beam(new_patient_idx, label_to_exclude, beam_size, xgb_cl, c
                 "coverage": float(exp_m.coverage()),
             })
 
-    cov_medoid = safe_mean(medoid_main_covs)
-
     # UNION pruning coverages
     coverage_df = subset_new_patient
 
@@ -479,8 +485,6 @@ def run_one_pair_at_beam(new_patient_idx, label_to_exclude, beam_size, xgb_cl, c
 
     return {
         "original": cov_original,
-        "mean": cov_mean,
-        "medoid": cov_medoid,
         "union1": float(union_cov1),
         "union2": float(union_cov2),
     }
@@ -494,10 +498,10 @@ def run_experiment():
     xgb_cl.load_model("xgb_model.json")
     class_names = xgb_cl.classes_
 
-    n_instances = min(N_TEST_INSTANCES, len(X_test))
-    selected_test_indices = rng.choice(len(X_test), size=n_instances, replace=False)
+    n_instances = min(N_ANCHOR_INSTANCES, len(X_anchors))
+    selected_anchor_indices = rng.choice(len(X_anchors), size=n_instances, replace=False)
 
-    modes = ["original", "mean", "medoid", "union1", "union2"]
+    modes = ["original", "union1", "union2"]
     raw = {m: {b: [] for b in beam_sizes} for m in modes}
 
     start = time.time()
@@ -507,8 +511,9 @@ def run_experiment():
         print(f"Running beam_size = {b}")
         print("=" * 100)
 
-        for idx in selected_test_indices:
-            labels = sample_labels(class_names, n=N_LABELS_PER_INSTANCE)
+        for idx in selected_anchor_indices:
+            true_label = int(y_anchors.iloc[int(idx)])
+            labels = sample_same_group_labels(true_label=true_label, n=N_LABELS_PER_INSTANCE)
             for lab in labels:
                 out = run_one_pair_at_beam(
                     new_patient_idx=int(idx),
@@ -545,7 +550,7 @@ def plot_mode(title, means, stds):
     upper = np.array(means) + np.array(stds)
     plt.fill_between(beam_sizes, lower, upper, alpha=0.2)
     plt.xlabel("Beam size")
-    plt.ylabel("Coverage")
+    plt.ylabel("Union Coverage")
     plt.title(title)
     plt.grid(True, linestyle="--", alpha=0.6)
     plt.ylim(0, 1)
@@ -556,8 +561,20 @@ def plot_mode(title, means, stds):
 if __name__ == "__main__":
     raw, curves = run_experiment()
 
-    plot_mode("Coverage vs Beam size — Original mode", curves["original"]["mean"], curves["original"]["std"])
-    plot_mode("Coverage vs Beam size — Mean-instances mode", curves["mean"]["mean"], curves["mean"]["std"])
-    plot_mode("Coverage vs Beam size — Medoid mode (avg across medoids)", curves["medoid"]["mean"], curves["medoid"]["std"])
-    plot_mode("Coverage vs Beam size — Medoid + union pruning (mode 1)", curves["union1"]["mean"], curves["union1"]["std"])
-    plot_mode("Coverage vs Beam size — Medoid + union pruning (mode 2)", curves["union2"]["mean"], curves["union2"]["std"])
+    plot_mode(
+        "Union coverage vs Beam size — Original mode",
+        curves["original"]["mean"],
+        curves["original"]["std"]
+    )
+
+    plot_mode(
+        "Union coverage vs Beam size — Union pruning mode 1",
+        curves["union1"]["mean"],
+        curves["union1"]["std"]
+    )
+
+    plot_mode(
+        "Union coverage vs Beam size — Union pruning mode 2",
+        curves["union2"]["mean"],
+        curves["union2"]["std"]
+    )

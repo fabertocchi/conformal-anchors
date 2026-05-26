@@ -43,7 +43,7 @@ rng = np.random.default_rng(1)
 # -----------------------------
 # Settings
 # -----------------------------
-beam_sizes = [1, 3, 5, 7, 10, 15, 20]#, 25, 30]
+beam_sizes = [1, 3, 5, 7, 10, 12, 15]
 n_instances = 50
 k_neighbors = 100
 alpha = 0.01
