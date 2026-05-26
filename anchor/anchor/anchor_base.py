@@ -215,7 +215,7 @@ class AnchorBaseBeam(object):
         
         # If no previous anchors, create all single-predicate tuples
         if len(previous_best) == 0:
-            tuples = [(x, ) for x in all_features]
+            tuples = [(x, ) for x in all_features][::-1] # reversed order of tuples
             for x in tuples:
                 pres = data[:, x[0]].nonzero()[0]                   # Samples satisfying the predicate x
                 state['t_idx'][x] = set(pres)                       # Indices of samples satisfying predicate x
@@ -512,13 +512,13 @@ class AnchorBaseBeam(object):
             # Generate all candidate tuples of length 'current_size' by extending the best anchors of size 'current_size - 1'
             tuples = AnchorBaseBeam.make_tuples(
                 best_of_size[current_size - 1], state)
-            print("All tuples of size", current_size, ":", tuples, "len tuples:", len(tuples))
+            # print("All tuples of size", current_size, ":", tuples, "len tuples:", len(tuples))
             # print("tuples before filtering:", tuples)
             # Filter out tuples with coverage less than the best found so far
     
             tuples = [x for x in tuples
                       if state['t_coverage'][x] > best_coverage]
-            print("Filtered tuples:", tuples)
+            # print("Filtered tuples:", tuples)
             if len(tuples) == 0:
                 print("no valid tuples found")
                 break
@@ -542,7 +542,7 @@ class AnchorBaseBeam(object):
             
             stop_this = False
             for i, t in zip(chosen_tuples, best_of_size[current_size]):
-                print("Evaluating tuple:", i, t)
+                #print("Evaluating tuple:", i, t)
                 # I can choose at most (beam_size - 1) tuples at each step,
                 # and there are at most n_feature steps
                 # Compute confidence bounds for the candidate rule

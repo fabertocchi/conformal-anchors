@@ -227,3 +227,9 @@ two_pass_*
 prova.py
 debugging*.py
 kernel-based non-parametric*
+*.txt
+*.png
+*.pdf 
+*.docx
+*.csv
+*.rtf

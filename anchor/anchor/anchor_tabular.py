@@ -327,9 +327,9 @@ class AnchorTabularExplainer(object):
     def get_sample_fn(self, data_row, classifier, 
                       mode="standard",              # "standard" or "conformal"
                       query_label=None, qhat=None,  # used only if mode="conformal"
-                      desired_label=None,
-                      predicate_mode="original",    # "original" or "mean_instances"
-                      mean_instances=None,          # used only if predicate_mode="mean_instances"
+                      desired_label=None, 
+                      predicate_mode="original",    # "original" or "mean_instances" or "medoid"
+                      mean_instances=None,          # used only if predicate_mode="mean_instances"  
                       verbose=True):
         """Prepares the sampling function for generating perturbed samples around a reference example
         and evaluates how often a trained model keeps the same prediction under those perturbations."""
@@ -356,22 +356,36 @@ class AnchorTabularExplainer(object):
         if predicate_mode == "mean_instances":
             if mean_instances is None:
                 raise ValueError("`mean_instances` must be provided in mean_instances mode.")
-            mean_instances = mean_instances
-            print("Mean instances", mean_instances)
-            # print("len mean instances", len(mean_instances))
-        
+            instances_for_predicates = mean_instances
+            if verbose:
+                print("Using mean_instances mode with", len(instances_for_predicates), "instances.")
+
+        elif predicate_mode == "medoid":
+            instances_for_predicates = [data_row]
+            if verbose:
+                print("Using medoid mode.")
+
         elif predicate_mode == "original":
-            mean_instances = [data_row]
+            # Standard mode: predicates built from the single explained instance
+            instances_for_predicates = [data_row]
+            if verbose:
+                print("Using original mode (single instance).")
+
+        else:
+            raise ValueError(f"Unknown predicate_mode: {predicate_mode}")
+
                 
         # Discretize the reference row and build candidate predicates (`mapping`)
         mapping = {}    # will hold a dictionary of candidate predicates: idx -> (feature_index, operator, value)
         
-        for mean_instance in mean_instances:
-            mean_instance_disc = self.disc.discretize(mean_instance.reshape(1, -1))[0]        # Identity if None
+        # data_row_disc = self.disc.discretize(data_row.reshape(1, -1))[0]
 
-            # Explore logical conditions over feature values, enumerating every allowable condition for categorical and ordinal features
-            # * Ordinal features produce '<=' and '>=' conditions for each possible threshold value
-            # * Nominal categorical features produce '==' conditions for each possible category value
+        # Explore logical conditions over feature values, enumerating every allowable condition for categorical and ordinal features
+        # * Ordinal features produce '<=' and '>=' conditions for each possible threshold value
+        # * Nominal categorical features produce '==' conditions for each possible category value
+        for base_instance in instances_for_predicates:
+            base_instance_disc = self.disc.discretize(base_instance.reshape(1, -1))[0]
+
             # Each predicate is stored in `mapping` using an integer key.
             for f in self.categorical_features:         # f is an int (column index), categorical_features (and ordinal_features) must be list of int
 
@@ -379,11 +393,11 @@ class AnchorTabularExplainer(object):
                     # For ordinal features, create <= or > threshold tests for each value.
                     for v in self.categorical_names[f]:
                         idx = len(mapping)
-                        if mean_instance_disc[f] <= v: # and v != self.categorical_names[f][-1]: #v != len(self.categorical_names[f]) - 1:
+                        if base_instance_disc[f] <= v: # and v != self.categorical_names[f][-1]: #v != len(self.categorical_names[f]) - 1:
                             mapping[idx] = (f, 'leq', v)
                             # print("value of feature", f, ":", data_row[f], "condition added:", mapping[idx])
                             # names[idx] = '%s <= %s' % (self.feature_names[f], v)
-                        elif mean_instance_disc[f] > v:
+                        elif base_instance_disc[f] > v:
                             mapping[idx] = (f, 'geq', v)
                             # print("value of feature", f, ":", data_row[f], "condition added:", mapping[idx])
                             # names[idx] = '%s > %s' % (self.feature_names[f], v)
@@ -391,7 +405,7 @@ class AnchorTabularExplainer(object):
                 else:
                     # For nominal features, create an equality test matching the reference value.
                     idx = len(mapping)
-                    mapping[idx] = (f, 'eq', mean_instance_disc[f])
+                    mapping[idx] = (f, 'eq', base_instance_disc[f])
         # print("Initial mapping", mapping)
         # Remove duplicate predicates (same feature, operator, value)
         seen = set()
@@ -404,8 +418,6 @@ class AnchorTabularExplainer(object):
         mapping = unique_mapping
 
         print("mapping", mapping)
-        if verbose:
-            print(f"Generated {len(mapping)} unique predicates from {len(mean_instances)} mean instances")
         
         # Define actual sampler
         def sample_fn(present, num_samples, compute_labels=True):
@@ -476,14 +488,12 @@ class AnchorTabularExplainer(object):
         return sample_fn, mapping
 
     def explain_instance(self, data_row, classifier, mode="standard", query_label=None, qhat=None, threshold=0.95,
-                          delta=0.1, tau=0.15, batch_size=100,
-                          max_anchor_size=None, desired_label=None, beam_size=10, predicate_mode="original",
-                          mean_instances=None, **kwargs):
+                          delta=0.01, tau=0.15, batch_size=100,
+                          max_anchor_size=None, desired_label=None, beam_size=10, predicate_mode="original", mean_instances=None, **kwargs):
         """Run the Anchor beam search on ``data_row`` and package the result."""
         
         # Build the perturbation sampler and predicate mapping for this instance.
-        sample_fn, mapping = self.get_sample_fn(data_row, classifier, mode=mode, query_label=query_label, qhat=qhat, desired_label=desired_label, predicate_mode=predicate_mode,
-                                                mean_instances=mean_instances)
+        sample_fn, mapping = self.get_sample_fn(data_row, classifier, mode=mode, query_label=query_label, qhat=qhat, desired_label=desired_label, predicate_mode=predicate_mode, mean_instances=mean_instances)
         
         # Run Anchor beam search passing the sampling closure and the statistical guarantees
         # The beam search proposes combinations of predicates, uses `sample_fn` to estimate their precision and coverage, 
