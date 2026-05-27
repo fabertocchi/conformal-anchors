@@ -29,7 +29,7 @@ class AnchorTabularExplainer(object):
             this map will be considered as ordinal or continuous, and thus discretized.
     """
     def __init__(self, class_names, feature_names, train_data,
-                 categorical_names={}, discretizer=None, encoder_fn=None):
+                 categorical_names={}, discretizer=None, encoder_fn=None, verbose=False):
         
         # Initialize min/max dictionaries which will hold the min and max values for each feature
         self.min = {}
@@ -58,7 +58,8 @@ class AnchorTabularExplainer(object):
                     i: [v for v in sorted(np.unique(train_data[:, i]))]
                     for i in range(train_data.shape[1])
                 }
-                print("Categorical names:", self.categorical_names)
+                if verbose:
+                    print("Categorical names:", self.categorical_names)
         
         # If a discretizer is provided, initialize LIME discretizer accordingly
         else:
@@ -330,7 +331,7 @@ class AnchorTabularExplainer(object):
                       desired_label=None, 
                       predicate_mode="original",    # "original" or "mean_instances" or "medoid"
                       mean_instances=None,          # used only if predicate_mode="mean_instances"  
-                      verbose=True):
+                      verbose=False):
         """Prepares the sampling function for generating perturbed samples around a reference example
         and evaluates how often a trained model keeps the same prediction under those perturbations."""
         
@@ -416,8 +417,8 @@ class AnchorTabularExplainer(object):
                 seen.add(key)
                 unique_mapping[len(unique_mapping)] = (f, op, v)
         mapping = unique_mapping
-
-        print("mapping", mapping)
+        if verbose:
+            print("mapping", mapping)
         
         # Define actual sampler
         def sample_fn(present, num_samples, compute_labels=True):
@@ -489,11 +490,11 @@ class AnchorTabularExplainer(object):
 
     def explain_instance(self, data_row, classifier, mode="standard", query_label=None, qhat=None, threshold=0.95,
                           delta=0.01, tau=0.15, batch_size=100,
-                          max_anchor_size=None, desired_label=None, beam_size=10, predicate_mode="original", mean_instances=None, **kwargs):
+                          max_anchor_size=None, desired_label=None, beam_size=10, predicate_mode="original", mean_instances=None, verbose=False, **kwargs):
         """Run the Anchor beam search on ``data_row`` and package the result."""
         
         # Build the perturbation sampler and predicate mapping for this instance.
-        sample_fn, mapping = self.get_sample_fn(data_row, classifier, mode=mode, query_label=query_label, qhat=qhat, desired_label=desired_label, predicate_mode=predicate_mode, mean_instances=mean_instances)
+        sample_fn, mapping = self.get_sample_fn(data_row, classifier, mode=mode, query_label=query_label, qhat=qhat, desired_label=desired_label, predicate_mode=predicate_mode, mean_instances=mean_instances, verbose=verbose)
         
         # Run Anchor beam search passing the sampling closure and the statistical guarantees
         # The beam search proposes combinations of predicates, uses `sample_fn` to estimate their precision and coverage, 
@@ -501,7 +502,7 @@ class AnchorTabularExplainer(object):
         exp, valid_anchors = anchor_base.AnchorBaseBeam.anchor_beam(
             sample_fn, delta=delta, epsilon=tau, batch_size=batch_size,
             desired_confidence=threshold, beam_size=beam_size, max_anchor_size=max_anchor_size,
-            mapping=mapping, enable_conflict_check=True,
+            mapping=mapping, enable_conflict_check=True, verbose=verbose,
             **kwargs)
         
         # Convert predicate indices into readable feature/value strings.

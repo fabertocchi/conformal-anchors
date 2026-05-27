@@ -197,7 +197,8 @@ class AnchorBaseBeam(object):
         
         # When bounds are sufficiently separated, return the top_n arms with largest means
         sorted_means = np.argsort(means)
-        print("means", sorted_means[-top_n:])
+        if verbose:
+            print("means", sorted_means[-top_n:])
         return sorted_means[-top_n:]
 
     @staticmethod
@@ -533,7 +534,8 @@ class AnchorBaseBeam(object):
                 sample_fns, initial_stats, epsilon, delta, batch_size,
                 min(beam_size, len(tuples)),
                 verbose=verbose, verbose_every=verbose_every)
-            print("chosen tuples:", chosen_tuples, "len chosen tuples:", len(chosen_tuples))
+            if verbose:
+                print("chosen tuples:", chosen_tuples, "len chosen tuples:", len(chosen_tuples))
             # Keep the B-best rules of the current size for the next iteration
             best_of_size[current_size] = [tuples[x] for x in chosen_tuples]
             # print(f"Best of size {current_size}:", best_of_size[current_size])
@@ -554,14 +556,16 @@ class AnchorBaseBeam(object):
                     mean, beta / state['t_nsamples'][t])
                 coverage = state['t_coverage'][t]
 
-                print(
-                    f"[SIZE {current_size}] candidate={t} | "
-                    f"cov={coverage:.6f} | mean={mean:.4f} | lb={lb:.4f} | ub={ub:.4f} | "
-                    f"n={int(state['t_nsamples'][t])}"
-                )
+                if verbose:
+                    print(
+                        f"[SIZE {current_size}] candidate={t} | "
+                        f"cov={coverage:.6f} | mean={mean:.4f} | lb={lb:.4f} | ub={ub:.4f} | "
+                        f"n={int(state['t_nsamples'][t])}"
+                    )
 
 
-                # print("chosen tuple:", i, "precision:", mean, "lb:", lb, "ub:", ub)
+                if verbose:
+                    print("chosen tuple:", i, "precision:", mean, "lb:", lb, "ub:", ub)
                 # Keep sampling until the confidence interval is sufficiently tight
                 while ((mean >= desired_confidence and lb < desired_confidence - epsilon_stop) or
                        (mean < desired_confidence and ub >= desired_confidence + epsilon_stop)):
@@ -573,11 +577,12 @@ class AnchorBaseBeam(object):
                     ub = AnchorBaseBeam.dup_bernoulli(
                         mean, beta / state['t_nsamples'][t])
                     
-                print(
-                    f"[SIZE {current_size}] final  ={t} | "
-                    f"cov={coverage:.6f} | mean={mean:.4f} | lb={lb:.4f} | ub={ub:.4f} | "
-                    f"n={int(state['t_nsamples'][t])}"
-                )
+                if verbose:
+                    print(
+                        f"[SIZE {current_size}] final  ={t} | "
+                        f"cov={coverage:.6f} | mean={mean:.4f} | lb={lb:.4f} | ub={ub:.4f} | "
+                        f"n={int(state['t_nsamples'][t])}"
+                    )
 
                 
                 # print('%s mean = %.2f lb = %.2f ub = %.2f coverage: %.2f n: %d' % (t, mean, lb, ub, coverage, state['t_nsamples'][t]))
@@ -592,7 +597,8 @@ class AnchorBaseBeam(object):
                     if coverage > best_coverage:
                         best_coverage = coverage
                         best_tuple = t
-                        print("Best tuple with coverage", best_coverage, ":", best_tuple)
+                        if verbose:
+                            print("Best tuple with coverage", best_coverage, ":", best_tuple)
                         # Stop early if desired coverage reached or user requests early stop
                         # if best_coverage == 1 or stop_on_first:
                         #     stop_this = True
@@ -620,7 +626,8 @@ class AnchorBaseBeam(object):
                 sample_fns, initial_stats, epsilon, delta, batch_size,
                 1, verbose=verbose)
             best_tuple = tuples[chosen_tuples[0]]
-            print("Best tuple:", best_tuple)
+            if verbose:
+                print("Best tuple:", best_tuple)
 
     
         print("---> valid anchors found:", len(valid_anchors_list), valid_anchors_list)
