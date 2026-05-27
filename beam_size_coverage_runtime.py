@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # BEAM SIZE SENSITIVITY (UNION PRUNING MODES 1 & 2, MEDOID)
 # Coverage vs beam size + Runtime vs beam size
-# - 50 test instances
+# - 50 anchor instances
 # - for each instance: exclude ONE label in the SAME disease group (≠ true), chosen at random
 # - medoid-based anchors + union pruning mode 1 and 2
 # - writes a full log to an output .txt file
@@ -317,6 +317,9 @@ def pick_same_group_label_to_exclude_random(true_label, rng_local):
 # =========================================================
 # STORAGE FOR RESULTS
 # =========================================================
+coverage_by_beam_orig = {b: [] for b in beam_sizes}
+runtime_by_beam_orig  = {b: [] for b in beam_sizes}
+
 coverage_by_beam_u1 = {b: [] for b in beam_sizes}   # union mode 1: union coverage
 runtime_by_beam_u1  = {b: [] for b in beam_sizes}
 
@@ -328,18 +331,18 @@ skipped_instances = 0
 # ---------------------------------------------------------
 # Select instances
 # ---------------------------------------------------------
-n_instances = min(n_instances, len(X_test))
-selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
+n_instances = min(n_instances, len(X_anchors))
+selected_anchor_indices = np.random.choice(len(X_anchors), size=n_instances, replace=False)
 
 # ---------------------------------------------------------
 # OUTPUT FILE
 # ---------------------------------------------------------
-output_path = "beam_size_sensitivity_union_modes_medoid_new.txt"
+output_path = "beam_size_sensitivity_coverage_runtime_all_modes.txt"
 
 with open(output_path, "w") as f:
-    f.write("BEAM SIZE SENSITIVITY – MEDOID + UNION PRUNING MODES 1 & 2\n")
+    f.write("BEAM SIZE SENSITIVITY – ORIGINAL MODE + MEDOID UNION PRUNING MODES 1 & 2\n")
     f.write("Coverage vs beam size (union coverage) + Runtime vs beam size\n")
-    f.write(f"Number of test instances: {n_instances}\n")
+    f.write(f"Number of anchor instances: {n_instances}\n")
     f.write(f"k (neighbors): {k_neighbors}\n")
     f.write(f"alpha: {alpha}\n")
     f.write(f"Beam sizes: {beam_sizes}\n")
@@ -347,13 +350,20 @@ with open(output_path, "w") as f:
     f.write("Anchor construction: medoid-based neighborhood + union pruning\n")
     f.write("=" * 100 + "\n\n")
 
-    for run_id, test_idx in enumerate(selected_test_indices, 1):
+    for run_id, anchor_idx in enumerate(selected_anchor_indices, 1):
         f.write("=" * 80 + "\n")
-        f.write(f"Instance {run_id}/{n_instances} (test index = {test_idx})\n")
+        f.write(f"Instance {run_id}/{n_instances} (anchor index = {anchor_idx})\n")
 
         # Target patient (no masking here)
-        new_patient = X_test.iloc[test_idx].copy()
-        true_label  = int(y_test.iloc[test_idx])
+        new_patient = X_anchors.iloc[anchor_idx].copy()
+        true_label  = int(y_anchors.iloc[anchor_idx])
+
+        anchor_pool_mask = np.ones(len(X_anchors), dtype=bool)
+        anchor_pool_mask[anchor_idx] = False
+
+        X_anchor_pool = X_anchors.iloc[anchor_pool_mask].reset_index(drop=True)
+        y_anchor_pool = y_anchors.iloc[anchor_pool_mask].reset_index(drop=True)
+        X_anchor_orig_pool = X_anchors_orig.iloc[anchor_pool_mask].reset_index(drop=True)
 
         # Choose label-to-exclude (random same group)
         label_to_exclude = pick_same_group_label_to_exclude_random(true_label, rng)
@@ -364,17 +374,17 @@ with open(output_path, "w") as f:
 
         # Build 1-row DF for get_knn_subsets
         new_patient_df = new_patient.to_frame().T
-        new_patient_df.index = [test_idx]
+        new_patient_df.index = [anchor_idx]
 
         # kNN neighborhood (binned + raw indices)
         subsets_list, y_subsets_list, similarities_list, indices_neighbors_list = get_knn_subsets(
-            new_patient_df, X_anchors, y_anchors, k=k_neighbors
+            new_patient_df, X_anchor_pool, y_anchor_pool, k=k_neighbors
         )
         subset_new_patient = subsets_list[0]                 # binned neighbors (DataFrame)
         y_subset_new_patient = y_subsets_list[0]             # neighbor labels
         indices_neighbors = indices_neighbors_list[0]        # indices into *_orig pools
 
-        subset_new_patient_raw = X_anchors_orig.iloc[indices_neighbors].reset_index(drop=True)
+        subset_new_patient_raw = X_anchor_orig_pool.iloc[indices_neighbors].reset_index(drop=True)
 
         # conformal prediction sets on neighbors + qhat
         prediction_sets, qhat = compute_conformal_prediction_set_batch(
@@ -501,6 +511,22 @@ with open(output_path, "w") as f:
         # -----------------------------------------------------
         flatten_tol = 1e-4
 
+        idx_example_to_anchor = int(rng.choice(idxs_excluding))
+        anchor_row = subset_new_patient.iloc[idx_example_to_anchor].copy()
+
+        anchor_row[generic_symptoms_cols] = new_patient[generic_symptoms_cols].values
+        anchor_instance = anchor_row.to_numpy()
+
+        indices_train_orig = [i for i in range(len(subset_new_patient)) if i != idx_example_to_anchor]
+
+        explainer_orig = AnchorTabularExplainer(
+            class_names=class_names,
+            feature_names=subset_new_patient.columns.tolist(),
+            train_data=subset_new_patient.iloc[indices_train_orig].to_numpy(),
+            discretizer=None,
+            categorical_names={}
+        )
+
         for b in beam_sizes:
             f.write(f"  >> Beam size B = {b}\n")
 
@@ -518,7 +544,7 @@ with open(output_path, "w") as f:
                     query_label=label_to_exclude,
                     qhat=qhat,
                     threshold=0.95,
-                    delta=0.1,
+                    delta=0.01,
                     tau=0.15,
                     beam_size=b,
                     predicate_mode="medoid",
@@ -581,7 +607,7 @@ with open(output_path, "w") as f:
                     query_label=label_to_exclude,
                     qhat=qhat,
                     threshold=0.95,
-                    delta=0.1,
+                    delta=0.01,
                     tau=0.15,
                     beam_size=b,
                     predicate_mode="medoid",
@@ -628,6 +654,42 @@ with open(output_path, "w") as f:
 
             f.write(f"    [union2] union_coverage={final_union_cov2:.5f} | runtime={rt_u2:.4f}s\n")
 
+            # =======================
+            # ORIGINAL MODE
+            # =======================
+            t0 = time.perf_counter()
+
+            exp_orig, valid_anchors_orig = explainer_orig.explain_instance(
+                anchor_instance,
+                xgb_cl,
+                mode="conformal",
+                query_label=label_to_exclude,
+                qhat=qhat,
+                threshold=0.95,
+                delta=0.01,
+                tau=0.15,
+                beam_size=b,
+                predicate_mode="original",
+                mean_instances=None
+            )
+
+            # Take cumulative coverage directly from the explanation object
+            cumulative_cov_orig = exp_orig.cumulative_coverage()
+
+            # If cumulative_coverage is a list/trajectory, take the final value
+            if isinstance(cumulative_cov_orig, (list, tuple, np.ndarray)):
+                cumulative_cov_orig = cumulative_cov_orig[-1]
+
+            t1 = time.perf_counter()
+            rt_orig = float(t1 - t0)
+
+            coverage_by_beam_orig[b].append(float(cumulative_cov_orig))
+            runtime_by_beam_orig[b].append(rt_orig)
+
+            f.write(
+                f"    [original] cumulative_coverage={float(cumulative_cov_orig):.5f} | "
+                f"runtime={rt_orig:.4f}s\n"
+            )
         f.write("\n")
 
     # ---------------------------------------------------------
@@ -641,6 +703,7 @@ with open(output_path, "w") as f:
 
     mean_cov_u1, std_cov_u1, mean_rt_u1, std_rt_u1 = [], [], [], []
     mean_cov_u2, std_cov_u2, mean_rt_u2, std_rt_u2 = [], [], [], []
+    mean_cov_orig, std_cov_orig, mean_rt_orig, std_rt_orig = [], [], [], []
 
     f.write("\n" + "=" * 100 + "\n")
     f.write("AGGREGATE STATISTICS ACROSS INSTANCES (UNION COVERAGE)\n")
@@ -677,6 +740,20 @@ with open(output_path, "w") as f:
             f"  Beam {b:>2}: mean union_coverage = {m_cov:.5f} (std={s_cov:.5f}), "
             f"mean runtime = {m_rt:.5f}s (std={s_rt:.5f}s)\n"
         )
+    f.write("\nORIGINAL MODE:\n")
+    for b in beam_sizes:
+        m_cov, s_cov = mean_std(coverage_by_beam_orig[b])
+        m_rt, s_rt   = mean_std(runtime_by_beam_orig[b])
+        mean_cov_orig.append(m_cov)
+        std_cov_orig.append(s_cov)
+        mean_rt_orig.append(m_rt)
+        std_rt_orig.append(s_rt)
+
+        f.write(
+            f"  Beam {b:>2}: mean union_coverage = {m_cov:.5f} (std={s_cov:.5f}), "
+            f"mean runtime = {m_rt:.5f}s (std={s_rt:.5f}s)\n"
+        )
+
 
 print(f"Done. Full report saved to: {output_path}")
 
@@ -802,6 +879,17 @@ mean_cov_u2_arr = [float(np.mean(coverage_by_beam_u2[b])) if len(coverage_by_bea
                    for b in beam_sizes]
 mean_rt_u2_arr  = [float(np.mean(runtime_by_beam_u2[b]))  if len(runtime_by_beam_u2[b])  > 0 else np.nan
                    for b in beam_sizes]
+mean_cov_orig_arr = [
+    float(np.mean(coverage_by_beam_orig[b]))
+    if len(coverage_by_beam_orig[b]) > 0 else np.nan
+    for b in beam_sizes
+]
+
+mean_rt_orig_arr = [
+    float(np.mean(runtime_by_beam_orig[b]))
+    if len(runtime_by_beam_orig[b]) > 0 else np.nan
+    for b in beam_sizes
+]
 
 # PLOTS FOR UNION MODE 1
 plot_coverage_vs_beam(
@@ -845,4 +933,26 @@ plot_tradeoff(
     mean_rt_u2_arr,
     mode_name="Union pruning mode 2",
     pdf_name="tradeoff_coverage_vs_runtime_union2_medoid.pdf"
+)
+
+# PLOTS FOR ORIGINAL MODE
+plot_coverage_vs_beam(
+    coverage_by_beam_orig,
+    mean_cov_orig_arr,
+    mode_name="Original mode",
+    pdf_name="union_coverage_vs_beamsize_original_anchor_set.pdf"
+)
+
+plot_runtime_vs_beam(
+    runtime_by_beam_orig,
+    mean_rt_orig_arr,
+    mode_name="Original mode",
+    pdf_name="runtime_vs_beamsize_original_anchor_set.pdf"
+)
+
+plot_tradeoff(
+    mean_cov_orig_arr,
+    mean_rt_orig_arr,
+    mode_name="Original mode",
+    pdf_name="tradeoff_coverage_vs_runtime_original_anchor_set.pdf"
 )
