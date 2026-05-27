@@ -307,8 +307,8 @@ start_time = time.time()
 
 n_instances = 200
 n_instances = min(n_instances, len(X_test))
-beam_size = 10 #1
-beam_size_medoid = 7
+beam_size = 5
+beam_size_medoid = 5
 alpha = 0.01
 delta = 0.01
 
@@ -537,44 +537,44 @@ with open(output_path, "w") as f:
         # =====================================================
         # MEAN-INSTANCES
         # =====================================================
-        f.write("MEAN-INSTANCES MODE\n")
-        exp_mn, valid_mn = explainer_orig.explain_instance(
-            anchor_instance, xgb_cl,
-            mode="conformal",
-            query_label=label_to_exclude,
-            qhat=qhat,
-            threshold=0.95, delta=delta, tau=0.15,
-            beam_size=beam_size,
-            predicate_mode="mean_instances",
-            mean_instances=mean_instances_binned_df.to_numpy()
-        )
+        # f.write("MEAN-INSTANCES MODE\n")
+        # exp_mn, valid_mn = explainer_orig.explain_instance(
+        #     anchor_instance, xgb_cl,
+        #     mode="conformal",
+        #     query_label=label_to_exclude,
+        #     qhat=qhat,
+        #     threshold=0.95, delta=delta, tau=0.15,
+        #     beam_size=beam_size,
+        #     predicate_mode="mean_instances",
+        #     mean_instances=mean_instances_binned_df.to_numpy()
+        # )
 
-        avg_feats_mn, uniq_feats_mn, avg_prec_valid_mn = valid_anchor_stats(valid_mn)
-        main_applies_mn = int(anchor_applies_to_instance(exp_mn.names(), new_patient))
-        num_apply_mn = int(sum(anchor_applies_to_instance(va['names'], new_patient) for va in valid_mn))
+        # avg_feats_mn, uniq_feats_mn, avg_prec_valid_mn = valid_anchor_stats(valid_mn)
+        # main_applies_mn = int(anchor_applies_to_instance(exp_mn.names(), new_patient))
+        # num_apply_mn = int(sum(anchor_applies_to_instance(va['names'], new_patient) for va in valid_mn))
 
-        f.write(f"Main anchor: {' AND '.join(exp_mn.names())}\n")
-        f.write(f"Main precision: {exp_mn.precision():.3f}\n")
-        f.write(f"Main coverage: {exp_mn.coverage():.6f}\n")
-        f.write(f"Cumulative coverage: {exp_mn.cumulative_coverage():.6f}\n")
-        f.write(f"Avg precision over ALL valid anchors: {avg_prec_valid_mn}\n")
-        f.write(f"Does MAIN apply to patient? {bool(main_applies_mn)}\n")
-        f.write(f"#valid anchors applying: {num_apply_mn} / {len(valid_mn)}\n\n")
+        # f.write(f"Main anchor: {' AND '.join(exp_mn.names())}\n")
+        # f.write(f"Main precision: {exp_mn.precision():.3f}\n")
+        # f.write(f"Main coverage: {exp_mn.coverage():.6f}\n")
+        # f.write(f"Cumulative coverage: {exp_mn.cumulative_coverage():.6f}\n")
+        # f.write(f"Avg precision over ALL valid anchors: {avg_prec_valid_mn}\n")
+        # f.write(f"Does MAIN apply to patient? {bool(main_applies_mn)}\n")
+        # f.write(f"#valid anchors applying: {num_apply_mn} / {len(valid_mn)}\n\n")
 
-        results.append({
-            'instance_idx': new_patient_idx,
-            'mode': 'mean',
-            'label_to_exclude': label_to_exclude,
-            'main_precision': float(exp_mn.precision()),
-            'main_coverage': float(exp_mn.coverage()),
-            'cumulative_coverage': float(exp_mn.cumulative_coverage()),
-            'avg_precision_valid': float(avg_prec_valid_mn) if not np.isnan(avg_prec_valid_mn) else np.nan,
-            'avg_feats_valid': float(avg_feats_mn),
-            'num_unique_feats_valid': int(uniq_feats_mn),
-            'num_valid_anchors': int(len(valid_mn)),
-            'main_applies': int(main_applies_mn),
-            'num_valid_apply': int(num_apply_mn),
-        })
+        # results.append({
+        #     'instance_idx': new_patient_idx,
+        #     'mode': 'mean',
+        #     'label_to_exclude': label_to_exclude,
+        #     'main_precision': float(exp_mn.precision()),
+        #     'main_coverage': float(exp_mn.coverage()),
+        #     'cumulative_coverage': float(exp_mn.cumulative_coverage()),
+        #     'avg_precision_valid': float(avg_prec_valid_mn) if not np.isnan(avg_prec_valid_mn) else np.nan,
+        #     'avg_feats_valid': float(avg_feats_mn),
+        #     'num_unique_feats_valid': int(uniq_feats_mn),
+        #     'num_valid_anchors': int(len(valid_mn)),
+        #     'main_applies': int(main_applies_mn),
+        #     'num_valid_apply': int(num_apply_mn),
+        # })
 
         # =====================================================
         # MEDOID + collect for UNION
