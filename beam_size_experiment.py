@@ -46,7 +46,7 @@ ALPHA = 0.01
 DELTA = 0.01
 K_NEIGHBORS = 100
 
-N_ANCHOR_INSTANCES = 50     # average over these many patients
+N_ANCHOR_INSTANCES = 100     # average over these many patients
 N_LABELS_PER_INSTANCE = 1   # sample labels-to-exclude per patient; set None for all labels
 
 # Union pruning params

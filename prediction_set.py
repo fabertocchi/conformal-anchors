@@ -201,11 +201,11 @@ if __name__ == "__main__":
 
     # (2) Histogram of calibration scores with quantile qhat
     ax = axes[1]
-    ax.hist(cal_scores, bins=30, color="darkseagreen", alpha=0.9, edgecolor="white")
+    ax.hist(cal_scores, bins=30, color="darkseagreen", alpha=0.9, edgecolor="white", density=True)
     ax.axvline(qhat, color="lightcoral", linestyle="--", linewidth=2)
     ax.set_title("(2) get quantile")
-    ax.set_xlabel("scores, {s_i}")
-    ax.set_ylabel("#")
+    ax.set_xlabel("conformality scores")
+    ax.set_ylabel("frequency")
 
     # (3) Construct prediction set for test example
     test_softmax = xgb_cl.predict_proba(X_test)
@@ -221,4 +221,108 @@ if __name__ == "__main__":
 
     plt.tight_layout()
     plt.savefig("conformal_prediction_sets_example.pdf")
+    plt.show()
+    
+    
+    ###########################################
+    # SEPARATE SAVES 
+    ###########################################
+
+    # ============================================================
+    # (1) Compute scores on holdout data
+    # ============================================================
+    fig, ax = plt.subplots(figsize=(4, 3.2))
+
+    bars = ax.bar(
+        np.arange(len(class_names)),
+        cal_softmax[i_cal],
+        color="lightgray",
+        edgecolor="k",
+        linewidth=0.5,
+    )
+
+    bars[y_conf_pred.iloc[i_cal]].set_color("gray")
+
+    ax.axhline(
+        1 - cal_scores[i_cal],
+        color="seagreen",
+        linestyle="--",
+        linewidth=2,
+    )
+
+    # ax.set_title("(1) compute scores on holdout data")
+    ax.set_xlabel("class")
+    ax.set_ylabel("softmax output")
+    ax.set_xticks(np.arange(len(class_names)))
+
+    plt.tight_layout()
+    plt.savefig("conformal_step_1_scores.pdf", bbox_inches="tight")
+    plt.show()
+
+
+    # ============================================================
+    # (2) Histogram of calibration scores with quantile qhat
+    #     Histogram sums to 1
+    # ============================================================
+    fig, ax = plt.subplots(figsize=(4, 3.2))
+
+    weights = np.ones_like(cal_scores) / len(cal_scores)
+
+    ax.hist(
+        cal_scores,
+        bins=30,
+        weights=weights,
+        color="darkseagreen",
+        alpha=0.9,
+        edgecolor="white",
+    )
+
+    ax.axvline(
+        qhat,
+        color="lightcoral",
+        linestyle="--",
+        linewidth=2,
+    )
+
+    # ax.set_title("(2) get quantile")
+    ax.set_xlabel("conformality scores")
+    ax.set_ylabel("relative frequency")
+
+    plt.tight_layout()
+    plt.savefig("conformal_step_2_quantile_histogram.pdf", bbox_inches="tight")
+    plt.show()
+
+
+    # ============================================================
+    # (3) Construct prediction set for test example
+    # ============================================================
+    test_softmax = xgb_cl.predict_proba(X_test)
+
+    fig, ax = plt.subplots(figsize=(4, 3.2))
+
+    mask = test_softmax[i_test] >= (1 - qhat)
+    colors = np.where(mask, "#72d6c9", "lightgray")
+
+    ax.bar(
+        np.arange(len(class_names)),
+        test_softmax[i_test],
+        color=colors,
+        edgecolor="k",
+        linewidth=0.5,
+    )
+
+    ax.axhline(
+        1 - qhat,
+        color="lightcoral",
+        linestyle="--",
+        linewidth=2,
+    )
+
+    # ax.set_title("(3) construct prediction set")
+    ax.set_xlabel("class")
+    ax.set_ylabel("softmax output")
+    ax.set_xticks(np.arange(len(class_names)))
+
+    plt.tight_layout()
+    plt.savefig("conformal_step_3_prediction_set.pdf", bbox_inches="tight")
     plt.show()

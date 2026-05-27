@@ -12,7 +12,6 @@
 #   4. generate conformal anchors explaining the exclusion of the true label;
 #   5. compare five construction modes:
 #        - original mode;
-#        - mean-instances mode;
 #        - medoid mode based on K-Medoids with raw Gower distance;
 #        - union pruning mode 1, selecting anchors by maximum marginal union coverage gain;
 #        - union pruning mode 2, selecting anchors by decreasing individual coverage.
@@ -29,26 +28,34 @@
 # present in the patient are treated as not satisfying anchor predicates.
 # ---------------------------------------------------------
 
+import os
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 from anchor.anchor.anchor_tabular import AnchorTabularExplainer
 from model_training import (
     X_train, X_conf_pred, y_conf_pred,
     X_anchors, y_anchors, X_test, y_test,
-    X_train_orig,
     X_anchors_orig, y_anchors_orig,
     categories
 )
 import xgboost as xgb
 from subset import get_knn_subsets, gower_similarity_mixed_raw
-from prediction_set import compute_conformal_prediction_set_batch
+from prediction_set import compute_conformal_threshold, construct_prediction_sets
 from data.tests_v2 import TESTS
 from binning import bin_dataset
 from dataset_basic_setting import TEST_BOUNDS
 from sklearn_extra.cluster import KMedoids
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
 import pandas as pd
 import numpy as np
 import time
 
-np.random.seed(1)
+BASE_SEED = 1
+np.random.seed(BASE_SEED)
 
 # ---------------------------------------------------------
 # Helper functions overview
@@ -148,16 +155,108 @@ def gower_distance_to_all_raw(X, x, feature_names, symptom_cols, TEST_BOUNDS, sy
 def compute_gower_distance_matrix_raw(X, feature_names, symptom_cols, TEST_BOUNDS, symptom_range=(0, 10)):
     X = np.asarray(X, dtype=float)
     n = X.shape[0]
-    D = np.zeros((n, n), dtype=float)
-    for i in range(n):
-        D[i, :] = gower_distance_to_all_raw(
-            X, X[i],
-            feature_names=feature_names,
-            symptom_cols=symptom_cols,
-            TEST_BOUNDS=TEST_BOUNDS,
-            symptom_range=symptom_range
-        )
-    return D
+    if n == 0:
+        return np.zeros((0, 0), dtype=float)
+
+    ranges = np.ones(X.shape[1], dtype=float)
+    symptom_range_width = float(symptom_range[1] - symptom_range[0])
+    for j, fname in enumerate(feature_names):
+        if fname in symptom_cols:
+            ranges[j] = symptom_range_width if symptom_range_width > 0 else 1.0
+        elif fname in TEST_BOUNDS:
+            lo, hi = TEST_BOUNDS[fname]
+            width = float(hi - lo)
+            ranges[j] = width if width > 0 else 1.0
+
+    valid = ~np.isnan(X)
+    diff = np.abs(X[:, None, :] - X[None, :, :])
+    valid_pair = valid[:, None, :] & valid[None, :, :]
+    norm_diff = np.where(valid_pair, diff / ranges, 0.0)
+    den = valid_pair.sum(axis=2)
+    return np.where(den > 0, norm_diff.sum(axis=2) / den, 1.0)
+
+
+def parse_anchor_condition(cond):
+    cond = cond.strip()
+    if "≤" in cond:
+        feature, thresh = cond.split("≤", 1); op = "leq"
+    elif "<=" in cond:
+        feature, thresh = cond.split("<=", 1); op = "leq"
+    elif ">" in cond:
+        feature, thresh = cond.split(">", 1); op = "gt"
+    elif "=" in cond:
+        feature, thresh = cond.split("=", 1); op = "eq"
+    else:
+        return None
+
+    feature = feature.strip()
+    thresh = thresh.strip()
+    try:
+        return feature, op, float(thresh), True
+    except ValueError:
+        return feature, op, thresh, False
+
+
+def anchor_mask_numpy(predicate_names, X_values, feature_to_idx):
+    mask = np.ones(X_values.shape[0], dtype=bool)
+    for cond in predicate_names:
+        parsed = parse_anchor_condition(cond)
+        if parsed is None:
+            return np.zeros(X_values.shape[0], dtype=bool)
+
+        feature, op, thresh, numeric = parsed
+        col_idx = feature_to_idx.get(feature)
+        if col_idx is None:
+            return np.zeros(X_values.shape[0], dtype=bool)
+
+        col = X_values[:, col_idx]
+        valid = ~np.isnan(col)
+        if op == "leq":
+            if not numeric:
+                return np.zeros(X_values.shape[0], dtype=bool)
+            cond_mask = valid & (col <= thresh)
+        elif op == "gt":
+            if not numeric:
+                return np.zeros(X_values.shape[0], dtype=bool)
+            cond_mask = valid & (col > thresh)
+        elif op == "eq":
+            if numeric:
+                cond_mask = valid & (np.abs(col - thresh) < 1e-20)
+            else:
+                cond_mask = valid & (col.astype(str) == str(thresh))
+        else:
+            return np.zeros(X_values.shape[0], dtype=bool)
+
+        mask &= cond_mask
+        if not mask.any():
+            break
+    return mask
+
+
+def compute_anchor_coverage_masks(anchors, coverage_df, n_samples):
+    rng = np.random.default_rng(123)
+    sampled_idx = rng.choice(coverage_df.shape[0], size=n_samples, replace=True)
+    coverage_values = coverage_df.iloc[sampled_idx].to_numpy()
+    feature_to_idx = {name: i for i, name in enumerate(coverage_df.columns)}
+
+    masks = []
+    for a in anchors:
+        mask = anchor_mask_numpy(a['names'], coverage_values, feature_to_idx)
+        masks.append(mask)
+        a['cov_train'] = float(mask.mean())
+    return masks
+
+
+def dedupe_anchor_candidates(anchors):
+    deduped = []
+    seen = set()
+    for anchor in anchors:
+        key = tuple(anchor['names'])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(anchor)
+    return deduped
 
 
 def union_prune_anchors_mode1(anchors, coverage_df, n_samples=10000, flatten_tol=1e-6):
@@ -169,26 +268,11 @@ def union_prune_anchors_mode1(anchors, coverage_df, n_samples=10000, flatten_tol
     if n_universe == 0:
         return [], 0.0, [], []
 
-    rng = np.random.default_rng(123)   # fixed seed for pruning only
-    sampled_idx = rng.choice(n_universe, size=n_samples, replace=True)
-
-    # sampled_idx = np.random.choice(range(n_universe), size=n_samples, replace=True)
-    coverage_data = coverage_df.iloc[sampled_idx].reset_index(drop=True)
-    n_cov = coverage_data.shape[0]
-
-    state = {'t_coverage_idx': {}}
-    for t, a in enumerate(anchors):
-        mask = coverage_data.apply(
-            lambda row: anchor_applies_to_instance(a['names'], row),
-            axis=1
-        ).to_numpy(dtype=bool)
-        covered_idx = set(np.where(mask)[0])
-        state['t_coverage_idx'][t] = covered_idx
-        a['coverage_idx'] = covered_idx
-        a['cov_train'] = float(len(covered_idx)) / n_cov
+    masks = compute_anchor_coverage_masks(anchors, coverage_df, n_samples)
+    n_cov = masks[0].shape[0]
 
     final_anchors = []
-    covered_union = set()
+    covered_union = np.zeros(n_cov, dtype=bool)
     last_cum = 0.0
     remaining = set(range(len(anchors)))
     cov_traj, gain_traj = [], []
@@ -196,8 +280,8 @@ def union_prune_anchors_mode1(anchors, coverage_df, n_samples=10000, flatten_tol
     while remaining:
         best_t, best_gain, best_union = None, 0.0, None
         for t in remaining:
-            candidate_union = covered_union | state['t_coverage_idx'][t]
-            cum = float(len(candidate_union)) / n_cov
+            candidate_union = covered_union | masks[t]
+            cum = float(candidate_union.mean())
             gain = cum - last_cum
             if gain > best_gain:
                 best_gain, best_t, best_union = gain, t, candidate_union
@@ -207,7 +291,7 @@ def union_prune_anchors_mode1(anchors, coverage_df, n_samples=10000, flatten_tol
 
         final_anchors.append(anchors[best_t])
         covered_union = best_union
-        last_cum = float(len(covered_union)) / n_cov
+        last_cum = float(covered_union.mean())
         remaining.remove(best_t)
 
         cov_traj.append(last_cum)
@@ -224,34 +308,19 @@ def union_prune_anchors_mode2(anchors, coverage_df, n_samples=10000, flatten_tol
     if n_universe == 0:
         return [], 0.0, [], []
 
-    rng = np.random.default_rng(123)   # fixed seed for pruning only
-    sampled_idx = rng.choice(n_universe, size=n_samples, replace=True)
-
-    # sampled_idx = np.random.choice(range(n_universe), size=n_samples, replace=True)
-    coverage_data = coverage_df.iloc[sampled_idx].reset_index(drop=True)
-    n_cov = coverage_data.shape[0]
-
-    state = {'t_coverage_idx': {}}
-    for t, a in enumerate(anchors):
-        mask = coverage_data.apply(
-            lambda row: anchor_applies_to_instance(a['names'], row),
-            axis=1
-        ).to_numpy(dtype=bool)
-        covered_idx = set(np.where(mask)[0])
-        state['t_coverage_idx'][t] = covered_idx
-        a['coverage_idx'] = covered_idx
-        a['cov_train'] = float(len(covered_idx)) / n_cov
+    masks = compute_anchor_coverage_masks(anchors, coverage_df, n_samples)
+    n_cov = masks[0].shape[0]
 
     sorted_t = sorted(range(len(anchors)), key=lambda t: anchors[t]['cov_train'], reverse=True)
 
     final_anchors = []
-    covered_union = set()
+    covered_union = np.zeros(n_cov, dtype=bool)
     last_cum = 0.0
     cov_traj, gain_traj = [], []
 
     for rank, t in enumerate(sorted_t, start=1):
-        candidate_union = covered_union | state['t_coverage_idx'][t]
-        cum = float(len(candidate_union)) / n_cov
+        candidate_union = covered_union | masks[t]
+        cum = float(candidate_union.mean())
 
         if rank == 1:
             final_anchors.append(anchors[t])
@@ -293,11 +362,126 @@ def valid_anchor_stats(valid_anchors):
     return avg_feats, num_unique_feats, avg_prec_valid
 
 
+def task_seed(*parts):
+    seed_seq = np.random.SeedSequence([BASE_SEED, *map(int, parts)])
+    return int(seed_seq.generate_state(1)[0])
+
+
+def run_anchor_search_worker(payload):
+    np.random.seed(int(payload['seed']))
+
+    explainer = AnchorTabularExplainer(
+        class_names=class_names,
+        feature_names=payload['feature_cols'],
+        train_data=payload['train_data'],
+        discretizer=None,
+        categorical_names={},
+    )
+
+    exp, valid = explainer.explain_instance(
+        payload['instance'],
+        xgb_cl,
+        mode="conformal",
+        query_label=payload['label_to_exclude'],
+        qhat=payload['qhat'],
+        threshold=0.95,
+        delta=payload['delta'],
+        tau=0.15,
+        batch_size=payload['anchor_batch_size'],
+        coverage_samples=payload['anchor_coverage_samples'],
+        beam_size=payload['beam_size'],
+        predicate_mode=payload['predicate_mode'],
+        mean_instances=payload.get('mean_instances'),
+    )
+
+    patient = payload['patient']
+    avg_feats, uniq_feats, avg_prec_valid = valid_anchor_stats(valid)
+    main_applies = int(anchor_applies_to_instance(exp.names(), patient))
+    num_apply = int(sum(anchor_applies_to_instance(va['names'], patient) for va in valid))
+
+    if payload['mode'] == 'medoid':
+        m_id = int(payload['medoid_id'])
+        lines = [
+            f"\n--- Medoid {m_id}/{payload['n_medoids']} ---\n",
+            f"Main anchor: {' AND '.join(exp.names())}\n",
+            f"Main precision: {exp.precision():.3f}\n",
+            f"Main coverage: {exp.coverage():.6f}\n",
+            f"Cumulative coverage: {exp.cumulative_coverage():.6f}\n",
+            f"Avg precision over ALL valid anchors: {avg_prec_valid}\n",
+            f"Does MAIN apply to patient? {bool(main_applies)}\n",
+            f"#valid anchors applying: {num_apply} / {len(valid)}\n",
+        ]
+        result = {
+            'instance_idx': payload['new_patient_idx'],
+            'mode': 'medoid',
+            'medoid_id': m_id,
+            'label_to_exclude': payload['label_to_exclude'],
+            'main_precision': float(exp.precision()),
+            'main_coverage': float(exp.coverage()),
+            'cumulative_coverage': float(exp.cumulative_coverage()),
+            'avg_precision_valid': float(avg_prec_valid) if not np.isnan(avg_prec_valid) else np.nan,
+            'avg_feats_valid': float(avg_feats),
+            'num_unique_feats_valid': int(uniq_feats),
+            'num_valid_anchors': int(len(valid)),
+            'main_applies': int(main_applies),
+            'num_valid_apply': int(num_apply),
+        }
+
+        anchors = []
+        for va in valid:
+            anchors.append({
+                'names': va['names'],
+                'medoid_id': m_id,
+                'source': 'valid_anchor',
+                'precision': float(va['precision'][-1]),
+                'coverage': float(va['coverage'][-1]),
+            })
+
+        main_names = exp.names()
+        if not any(a['names'] == main_names for a in anchors):
+            anchors.append({
+                'names': main_names,
+                'medoid_id': m_id,
+                'source': 'main_anchor',
+                'precision': float(exp.precision()),
+                'coverage': float(exp.coverage()),
+            })
+
+        return lines, [result], anchors
+
+    lines = [
+        f"{payload['title']}\n",
+        f"Main anchor: {' AND '.join(exp.names())}\n",
+        f"Main precision: {exp.precision():.3f}\n",
+        f"Main coverage: {exp.coverage():.6f}\n",
+        f"Cumulative coverage: {exp.cumulative_coverage():.6f}\n",
+        f"Avg precision over ALL valid anchors: {avg_prec_valid}\n",
+        f"Does MAIN apply to patient? {bool(main_applies)}\n",
+        f"#valid anchors applying: {num_apply} / {len(valid)}\n\n",
+    ]
+    result = {
+        'instance_idx': payload['new_patient_idx'],
+        'mode': payload['mode'],
+        'label_to_exclude': payload['label_to_exclude'],
+        'main_precision': float(exp.precision()),
+        'main_coverage': float(exp.coverage()),
+        'cumulative_coverage': float(exp.cumulative_coverage()),
+        'avg_precision_valid': float(avg_prec_valid) if not np.isnan(avg_prec_valid) else np.nan,
+        'avg_feats_valid': float(avg_feats),
+        'num_unique_feats_valid': int(uniq_feats),
+        'num_valid_anchors': int(len(valid)),
+        'main_applies': int(main_applies),
+        'num_valid_apply': int(num_apply),
+    }
+    return lines, [result], []
+
+
 # ---------------------------------------------------------
 # MODEL
 # ---------------------------------------------------------
 xgb_cl = xgb.XGBClassifier()
 xgb_cl.load_model("xgb_model.json")
+xgb_cl.set_params(n_jobs=1)
 class_names = xgb_cl.classes_
 
 # ---------------------------------------------------------
@@ -307,37 +491,60 @@ start_time = time.time()
 
 n_instances = 1000
 n_instances = min(n_instances, len(X_test))
-beam_size = 5
-beam_size_medoid = 5
+beam_size = 5 #10 #1
+beam_size_medoid = 5 #7
 alpha = 0.01
 delta = 0.01
+anchor_coverage_samples = 2500
+anchor_batch_size = 100
+union_samples = 2500
+flatten_tol = 1e-2
+mode_max_workers = 2
+medoid_max_workers = 4
 
-# Use standard kNN subsets computed on full X_test
+# Sample first, then compute kNN only for the patients that will be evaluated.
+selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
 all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
-    X_test, X_anchors, y_anchors, k=100
+    X_test.iloc[selected_test_indices].reset_index(drop=True),
+    X_anchors,
+    y_anchors,
+    k=100
 )
 
-selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
+# qhat is invariant across patients because the model, calibration set, and alpha
+# do not change.
+qhat = compute_conformal_threshold(xgb_cl, X_conf_pred, y_conf_pred, alpha=alpha)
 
 results = []
 output_path = (
-    f"experiment_exclude_TRUE_label_all_modes_NO_missing_"
+    f"experiment_exclude_TRUE_label_all_modes_NO_missing_OPTIMIZED_"
     f"{beam_size}_{beam_size_medoid}_new_max_"
     f"delta{str(delta).replace('.', '_')}_"
     f"{n_instances}instances.txt"
 )
+anchor_pool = ProcessPoolExecutor(
+    max_workers=max(1, mode_max_workers + medoid_max_workers),
+    mp_context=get_context("fork")
+)
 
 with open(output_path, "w") as f:
     f.write("EXPERIMENT: Exclude TRUE label\n")
-    f.write("Modes: original, mean-instances, medoid, union_mode1, union_mode2\n")
+    f.write("Modes: original, medoid, union_mode1, union_mode2\n")
     f.write(f"Number of test instances: {n_instances}\n")
     f.write(f"Beam size: {beam_size}\n")
+    f.write(f"Medoid beam size: {beam_size_medoid}\n")
     f.write(f"alpha: {alpha}\n")
+    f.write(f"qhat: {qhat:.6f}\n")
+    f.write(f"Anchor coverage samples: {anchor_coverage_samples}\n")
+    f.write(f"Union pruning samples: {union_samples}\n")
+    f.write(f"Mode workers: {mode_max_workers}\n")
+    f.write(f"Medoid workers: {medoid_max_workers}\n")
     f.write("=" * 100 + "\n\n")
 
     counter_no_ps_excluding_true = 0
 
     for run_id, new_patient_idx in enumerate(selected_test_indices, 1):
+        subset_pos = run_id - 1
         f.write(f"### INSTANCE {run_id}/{n_instances} (test index = {new_patient_idx})\n")
         f.write("-" * 80 + "\n")
 
@@ -356,38 +563,33 @@ with open(output_path, "w") as f:
         # -----------------------------
         # 2) local neighborhood construction
         # -----------------------------
-        subset_new_patient = all_subsets[new_patient_idx]
-        y_subset_new_patient = y_subsets[new_patient_idx]
+        subset_new_patient = all_subsets[subset_pos]
+        y_subset_new_patient = y_subsets[subset_pos]
 
         subset_new_patient_raw = X_anchors_orig.iloc[
-            indices_neighbors[new_patient_idx]
+            indices_neighbors[subset_pos]
         ].reset_index(drop=True)
         y_subset_new_patient_raw = y_anchors_orig.iloc[
-            indices_neighbors[new_patient_idx]
+            indices_neighbors[subset_pos]
         ].reset_index(drop=True)
 
         # -----------------------------
         # 3) conformal prediction sets on neighbors
         # -----------------------------
-        prediction_sets, qhat = compute_conformal_prediction_set_batch(
-            xgb_cl, X_conf_pred, y_conf_pred, subset_new_patient, alpha=alpha
-        )
-        pred_sets_names = [list(class_names[mask]) for mask in prediction_sets]
+        prediction_sets = construct_prediction_sets(xgb_cl, subset_new_patient, qhat)
 
         label_to_exclude = true_label
         f.write(f"qhat: {qhat:.6f}\n")
         f.write(f"Label to exclude (TRUE): {label_to_exclude} ({categories[label_to_exclude]})\n")
 
-        pred_set_without_target = {
-            i: ps for i, ps in enumerate(pred_sets_names) if label_to_exclude not in ps
-        }
+        label_col = int(np.where(class_names == label_to_exclude)[0][0])
+        idxs_excl = np.flatnonzero(~prediction_sets[:, label_col]).tolist()
 
-        if len(pred_set_without_target) == 0:
+        if len(idxs_excl) == 0:
             f.write("No neighbors' prediction sets exclude the TRUE label. Skipping this instance.\n\n")
             counter_no_ps_excluding_true += 1
             continue
 
-        idxs_excl = list(pred_set_without_target.keys())
         neighbors_excl = subset_new_patient.iloc[idxs_excl]
         neighbors_excl_raw = subset_new_patient_raw.iloc[idxs_excl]
         neighbors_labels = y_subset_new_patient.iloc[idxs_excl]
@@ -408,7 +610,7 @@ with open(output_path, "w") as f:
         anchor_instance = anchor_row.to_numpy()
 
         # -----------------------------
-        # 5) mean instances (RAW per label mean -> bin)
+        # 5) raw per-label means, used only to initialize K-Medoids
         # -----------------------------
         mean_instances_raw = []
         cluster_indices_list = []
@@ -419,12 +621,6 @@ with open(output_path, "w") as f:
             cluster_indices_list.append(cluster_indices)
             mean_instances_raw.append(cluster.mean(axis=0))
         mean_instances_raw = np.vstack(mean_instances_raw)
-
-        mean_instances_df = pd.DataFrame(mean_instances_raw, columns=X_train_orig.columns)
-        mean_instances_binned_df = bin_dataset(
-            mean_instances_df, TESTS=TESTS, generic_symptoms_cols=generic_symptoms_cols, verbose=False
-        )
-        mean_instances_binned_df[generic_symptoms_cols] = new_patient[generic_symptoms_cols].values
 
         # -----------------------------
         # 6) K-Medoids (RAW Gower)
@@ -477,175 +673,65 @@ with open(output_path, "w") as f:
         categorical_names = {}
         indices_train_orig = [i for i in range(len(subset_new_patient)) if i != idx_example_to_anchor]
 
-        explainer_orig = AnchorTabularExplainer(
-            class_names=class_names,
-            feature_names=feature_cols,
-            train_data=subset_new_patient.iloc[indices_train_orig].to_numpy(),
-            discretizer=None,
-            categorical_names=categorical_names,
-        )
-        explainer_medoid = AnchorTabularExplainer(
-            class_names=class_names,
-            feature_names=feature_cols,
-            train_data=subset_new_patient.to_numpy(),
-            discretizer=None,
-            categorical_names=categorical_names,
-        )
+        orig_train_data = subset_new_patient.iloc[indices_train_orig].to_numpy()
+        medoid_train_data = subset_new_patient.to_numpy()
 
-        # =====================================================
-        # ORIGINAL
-        # =====================================================
-        f.write("ORIGINAL MODE\n")
-        exp_o, valid_o = explainer_orig.explain_instance(
-            anchor_instance, xgb_cl,
-            mode="conformal",
-            query_label=label_to_exclude,
-            qhat=qhat,
-            threshold=0.95, delta=delta, tau=0.15,
-            beam_size=beam_size,
-            predicate_mode="original",
-            mean_instances=None
-        )
-
-        avg_feats_o, uniq_feats_o, avg_prec_valid_o = valid_anchor_stats(valid_o)
-        main_applies_o = int(anchor_applies_to_instance(exp_o.names(), new_patient))
-        num_apply_o = int(sum(anchor_applies_to_instance(va['names'], new_patient) for va in valid_o))
-
-        f.write(f"Main anchor: {' AND '.join(exp_o.names())}\n")
-        f.write(f"Main precision: {exp_o.precision():.3f}\n")
-        f.write(f"Main coverage: {exp_o.coverage():.6f}\n")
-        f.write(f"Cumulative coverage: {exp_o.cumulative_coverage():.6f}\n")
-        f.write(f"Avg precision over ALL valid anchors: {avg_prec_valid_o}\n")
-        f.write(f"Does MAIN apply to patient? {bool(main_applies_o)}\n")
-        f.write(f"#valid anchors applying: {num_apply_o} / {len(valid_o)}\n\n")
-
-        results.append({
-            'instance_idx': new_patient_idx,
-            'mode': 'original',
-            'label_to_exclude': label_to_exclude,
-            'main_precision': float(exp_o.precision()),
-            'main_coverage': float(exp_o.coverage()),
-            'cumulative_coverage': float(exp_o.cumulative_coverage()),
-            'avg_precision_valid': float(avg_prec_valid_o) if not np.isnan(avg_prec_valid_o) else np.nan,
-            'avg_feats_valid': float(avg_feats_o),
-            'num_unique_feats_valid': int(uniq_feats_o),
-            'num_valid_anchors': int(len(valid_o)),
-            'main_applies': int(main_applies_o),
-            'num_valid_apply': int(num_apply_o),
-        })
-
-        # =====================================================
-        # MEAN-INSTANCES
-        # =====================================================
-        # f.write("MEAN-INSTANCES MODE\n")
-        # exp_mn, valid_mn = explainer_orig.explain_instance(
-        #     anchor_instance, xgb_cl,
-        #     mode="conformal",
-        #     query_label=label_to_exclude,
-        #     qhat=qhat,
-        #     threshold=0.95, delta=delta, tau=0.15,
-        #     beam_size=beam_size,
-        #     predicate_mode="mean_instances",
-        #     mean_instances=mean_instances_binned_df.to_numpy()
-        # )
-
-        # avg_feats_mn, uniq_feats_mn, avg_prec_valid_mn = valid_anchor_stats(valid_mn)
-        # main_applies_mn = int(anchor_applies_to_instance(exp_mn.names(), new_patient))
-        # num_apply_mn = int(sum(anchor_applies_to_instance(va['names'], new_patient) for va in valid_mn))
-
-        # f.write(f"Main anchor: {' AND '.join(exp_mn.names())}\n")
-        # f.write(f"Main precision: {exp_mn.precision():.3f}\n")
-        # f.write(f"Main coverage: {exp_mn.coverage():.6f}\n")
-        # f.write(f"Cumulative coverage: {exp_mn.cumulative_coverage():.6f}\n")
-        # f.write(f"Avg precision over ALL valid anchors: {avg_prec_valid_mn}\n")
-        # f.write(f"Does MAIN apply to patient? {bool(main_applies_mn)}\n")
-        # f.write(f"#valid anchors applying: {num_apply_mn} / {len(valid_mn)}\n\n")
-
-        # results.append({
-        #     'instance_idx': new_patient_idx,
-        #     'mode': 'mean',
-        #     'label_to_exclude': label_to_exclude,
-        #     'main_precision': float(exp_mn.precision()),
-        #     'main_coverage': float(exp_mn.coverage()),
-        #     'cumulative_coverage': float(exp_mn.cumulative_coverage()),
-        #     'avg_precision_valid': float(avg_prec_valid_mn) if not np.isnan(avg_prec_valid_mn) else np.nan,
-        #     'avg_feats_valid': float(avg_feats_mn),
-        #     'num_unique_feats_valid': int(uniq_feats_mn),
-        #     'num_valid_anchors': int(len(valid_mn)),
-        #     'main_applies': int(main_applies_mn),
-        #     'num_valid_apply': int(num_apply_mn),
-        # })
-
-        # =====================================================
-        # MEDOID + collect for UNION
-        # =====================================================
-        f.write("MEDOID MODE (KMedoids + RAW Gower)\n")
-
-        all_medoid_anchors_for_instance = []
-
+        common_payload = {
+            'feature_cols': feature_cols,
+            'patient': new_patient,
+            'new_patient_idx': int(new_patient_idx),
+            'label_to_exclude': int(label_to_exclude),
+            'qhat': float(qhat),
+            'delta': float(delta),
+            'anchor_batch_size': int(anchor_batch_size),
+            'anchor_coverage_samples': int(anchor_coverage_samples),
+        }
+        anchor_tasks = [
+            {
+                **common_payload,
+                'seed': task_seed(new_patient_idx, 10, 0),
+                'title': 'ORIGINAL MODE',
+                'mode': 'original',
+                'train_data': orig_train_data,
+                'instance': anchor_instance,
+                'beam_size': int(beam_size),
+                'predicate_mode': 'original',
+                'mean_instances': None,
+            },
+        ]
         for m_id, medoid_instance in enumerate(final_medoids_binned, 1):
-            exp_md, valid_md = explainer_medoid.explain_instance(
-                medoid_instance, xgb_cl,
-                mode="conformal",
-                query_label=label_to_exclude,
-                qhat=qhat,
-                threshold=0.95, delta=delta, tau=0.15,
-                beam_size=beam_size_medoid,
-                predicate_mode="medoid",
-                mean_instances=None
-            )
-
-            avg_feats_md, uniq_feats_md, avg_prec_valid_md = valid_anchor_stats(valid_md)
-            main_applies_md = int(anchor_applies_to_instance(exp_md.names(), new_patient))
-            num_apply_md = int(sum(anchor_applies_to_instance(va['names'], new_patient) for va in valid_md))
-
-            f.write(f"\n--- Medoid {m_id}/{len(final_medoids_binned)} ---\n")
-            f.write(f"Main anchor: {' AND '.join(exp_md.names())}\n")
-            f.write(f"Main precision: {exp_md.precision():.3f}\n")
-            f.write(f"Main coverage: {exp_md.coverage():.6f}\n")
-            f.write(f"Cumulative coverage: {exp_md.cumulative_coverage():.6f}\n")
-            f.write(f"Avg precision over ALL valid anchors: {avg_prec_valid_md}\n")
-            f.write(f"Does MAIN apply to patient? {bool(main_applies_md)}\n")
-            f.write(f"#valid anchors applying: {num_apply_md} / {len(valid_md)}\n")
-
-            results.append({
-                'instance_idx': new_patient_idx,
+            anchor_tasks.append({
+                **common_payload,
+                'seed': task_seed(new_patient_idx, 30, m_id),
                 'mode': 'medoid',
+                'train_data': medoid_train_data,
+                'instance': medoid_instance,
+                'beam_size': int(beam_size_medoid),
+                'predicate_mode': 'medoid',
+                'mean_instances': None,
                 'medoid_id': int(m_id),
-                'label_to_exclude': label_to_exclude,
-                'main_precision': float(exp_md.precision()),
-                'main_coverage': float(exp_md.coverage()),
-                'cumulative_coverage': float(exp_md.cumulative_coverage()),
-                'avg_precision_valid': float(avg_prec_valid_md) if not np.isnan(avg_prec_valid_md) else np.nan,
-                'avg_feats_valid': float(avg_feats_md),
-                'num_unique_feats_valid': int(uniq_feats_md),
-                'num_valid_anchors': int(len(valid_md)),
-                'main_applies': int(main_applies_md),
-                'num_valid_apply': int(num_apply_md),
+                'n_medoids': int(len(final_medoids_binned)),
             })
 
-            # collect anchors for union pruning
-            for va in valid_md:
-                all_medoid_anchors_for_instance.append({
-                    'names': va['names'],
-                    'medoid_id': m_id,
-                    'source': 'valid_anchor',
-                    'precision': float(va['precision'][-1]),
-                    'coverage': float(va['coverage'][-1]),
-                })
+        anchor_payloads = list(anchor_pool.map(run_anchor_search_worker, anchor_tasks))
 
-            main_names_md = exp_md.names()
-            if not any((a['names'] == main_names_md and a['medoid_id'] == m_id)
-                       for a in all_medoid_anchors_for_instance):
-                all_medoid_anchors_for_instance.append({
-                    'names': main_names_md,
-                    'medoid_id': m_id,
-                    'source': 'main_anchor',
-                    'precision': float(exp_md.precision()),
-                    'coverage': float(exp_md.coverage()),
-                })
+        original_lines, original_results, _ = anchor_payloads[0]
+        medoid_payloads = anchor_payloads[1:]
 
+        f.writelines(original_lines)
+        f.write("MEDOID MODE (KMedoids + RAW Gower)\n")
+        results.extend(original_results)
+
+        all_medoid_anchors_for_instance = []
+        for medoid_lines, medoid_results, medoid_anchors in medoid_payloads:
+            f.writelines(medoid_lines)
+            results.extend(medoid_results)
+            all_medoid_anchors_for_instance.extend(medoid_anchors)
         f.write("\n")
+
+        all_medoid_anchors_for_instance = dedupe_anchor_candidates(
+            all_medoid_anchors_for_instance
+        )
 
         # =====================================================
         # PRE-PRUNING: does ANY candidate medoid anchor apply to the patient?
@@ -668,12 +754,11 @@ with open(output_path, "w") as f:
         f.write("UNION PRUNING MODE 1 (max marginal gain)\n")
 
         coverage_df = subset_new_patient
-        flatten_tol = 1e-2
 
         final_u1, union_cov1, cov_traj1, gain_traj1 = union_prune_anchors_mode1(
             all_medoid_anchors_for_instance,
             coverage_df,
-            n_samples=10000,
+            n_samples=union_samples,
             flatten_tol=flatten_tol
         )
 
@@ -748,7 +833,7 @@ with open(output_path, "w") as f:
         final_u2, union_cov2, cov_traj2, gain_traj2 = union_prune_anchors_mode2(
             all_medoid_anchors_for_instance,
             coverage_df,
-            n_samples=10000,
+            n_samples=union_samples,
             flatten_tol=flatten_tol
         )
 
@@ -824,7 +909,7 @@ with open(output_path, "w") as f:
     f.write("GLOBAL STATISTICS ACROSS ALL INSTANCES (TRUE-LABEL EXCLUSION)\n")
     f.write("=" * 100 + "\n\n")
     f.write(f"#instances skipped (no neighbors excluding TRUE label): {counter_no_ps_excluding_true}\n\n")
-    for mode in ['original', 'medoid', 'mean', 'union_mode1', 'union_mode2']:
+    for mode in ['original', 'medoid', 'union_mode1', 'union_mode2']:
 
         mode_results = [r for r in results if r['mode'] == mode]
         if len(mode_results) == 0:
@@ -913,6 +998,8 @@ with open(output_path, "w") as f:
             )
 
         f.write("\n")
+
+anchor_pool.shutdown()
 
 end_time = time.time()
 total_time = end_time - start_time
