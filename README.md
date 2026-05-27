@@ -32,8 +32,8 @@ pip install -e .
 | File | Description |
 |------|-------------|
 | `dataset_basic_setting.py` | Disease names, feature bounds, and missingness configuration |
-| `data/tests_v1.py` | v1 test distributions: 3 diseases per organ group, less class-separable |
-| `data/tests_v2.py` | v2 test distributions: 5 diseases per organ group, used throughout all experiments |
+| `data/tests_v1.py` | version 1 of diagnostic test distributions: 3 diseases per organ group |
+| `data/tests_v2.py` | version 2 of diagnostic test distributions: 5 diseases per organ group, used throughout all experiments |
 | `generated_datasets/synthetic_patient_basic_setting_v1.csv` | Synthetic patient dataset generated with the v1 test distributions (3 diseases per group) |
 | `generated_datasets/synthetic_patient_basic_setting_v2.csv` | Synthetic patient dataset generated with the v2 test distributions (100 000 patients, 5 diseases per group) |
 | `generated_datasets/synthetic_patient_basic_setting_v2_binned.csv` | v2 dataset with continuous features discretised into interpretable categories |
@@ -57,7 +57,7 @@ pip install -e .
 
 | File | Description |
 |------|-------------|
-| `evaluation_experiment.py` | Main benchmark: OS, MG, and CG modes evaluated on 100 test instances |
+| `evaluation_experiment.py` | OS, MG, and CG modes evaluated on 100 test instances |
 | `complete_experiment_excluding_TRUE_label.py` | Marginal guarantee stress test where the excluded label is the true label |
 | `specific_experiment_case_studies.py` | Qualitative case studies on individual patients |
 | `beam_size_experiment.py` | Ablation: union coverage vs. beam size |
