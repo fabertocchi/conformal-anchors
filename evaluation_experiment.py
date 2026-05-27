@@ -589,7 +589,8 @@ all_subsets, y_subsets, similarities_list, indices_neighbors = get_knn_subsets(
 
 n_instances = 100
 n_instances = min(n_instances, len(X_test))   # safety
-beam_size = 10
+beam_size = 5
+beam_size_medoid = 5
 
 selected_test_indices = np.random.choice(len(X_test), size=n_instances, replace=False)
 
@@ -599,12 +600,17 @@ results = []
 # ---------------------------------------------------------
 ALL_ANCHOR_DELTAS = {
     'original': [],
-    'mean': [],
+    #'mean': [],
     'union1': [],
     'union2': [],
 }
 
-output_path = f"improved_anchor_experiment_results_full_framework_procedural_10_7_correct_group_nosympt_new_onlyplot_{time.time()}.txt"
+output_path = (
+    f"evaluation_experiment_"
+    f"beam_size_{beam_size}_"
+    f"medoid_beam_size_{beam_size_medoid}_"
+    f"correct_group.txt"
+)
 
 labels_stomach = [1, 5, 6, 7, 8]
 labels_lung = [0, 2, 3, 4, 9]
@@ -740,16 +746,16 @@ with open(output_path, "w") as f:
                 X_cluster_raw[cluster_indices_list[i]], equal_nan=True
             )
 
-        # mean-instances (binned)
-        mean_instances_raw_df = pd.DataFrame(mean_instances_raw, columns=feature_names_raw)
-        mean_instances_binned_df = bin_dataset(
-            mean_instances_raw_df,
-            TESTS=TESTS,
-            generic_symptoms_cols=generic_symptoms_cols,
-            verbose=False
-        )
-        mean_instances_binned_df[generic_symptoms_cols] = new_patient[generic_symptoms_cols].values
-        mean_instances_binned = mean_instances_binned_df.to_numpy()
+        # # mean-instances (binned)
+        # mean_instances_raw_df = pd.DataFrame(mean_instances_raw, columns=feature_names_raw)
+        # mean_instances_binned_df = bin_dataset(
+        #     mean_instances_raw_df,
+        #     TESTS=TESTS,
+        #     generic_symptoms_cols=generic_symptoms_cols,
+        #     verbose=False
+        # )
+        # mean_instances_binned_df[generic_symptoms_cols] = new_patient[generic_symptoms_cols].values
+        # mean_instances_binned = mean_instances_binned_df.to_numpy()
 
         # K-Medoids init from means
         init_medoids = []
@@ -820,13 +826,13 @@ with open(output_path, "w") as f:
             categorical_names=categorical_names,
         )
 
-        explainer_mean = AnchorTabularExplainer(
-            class_names=class_names,
-            feature_names=feature_cols,
-            train_data=subset_new_patient.to_numpy(),
-            discretizer=None,
-            categorical_names=categorical_names,
-        )
+        # explainer_mean = AnchorTabularExplainer(
+        #     class_names=class_names,
+        #     feature_names=feature_cols,
+        #     train_data=subset_new_patient.to_numpy(),
+        #     discretizer=None,
+        #     categorical_names=categorical_names,
+        # )
 
         # ----------------------------------------------------
         # 7) ORIGINAL MODE
@@ -980,153 +986,153 @@ with open(output_path, "w") as f:
         # ----------------------------------------------------
         # 7b) MEAN-INSTANCES MODE
         # ----------------------------------------------------
-        f.write("MEAN-INSTANCES MODE\n")
-        t0_mode = time.time()
+        # f.write("MEAN-INSTANCES MODE\n")
+        # t0_mode = time.time()
 
-        all_valid_anchors_mean = []
-        # One call with mean_instances passed to explainer_mean (or explainer_orig).
-        exp_mean, valid_anchors_mean = explainer_mean.explain_instance(
-            anchor_instance,
-            xgb_cl,
-            mode="conformal",
-            query_label=label_to_exclude,
-            qhat=qhat,
-            threshold=0.95,
-            delta=0.01,
-            tau=0.15,
-            beam_size=beam_size,
-            # assuming your AnchorTabularExplainer supports this:
-            mean_instances=mean_instances_binned,
-        )
+        # all_valid_anchors_mean = []
+        # # One call with mean_instances passed to explainer_mean (or explainer_orig).
+        # exp_mean, valid_anchors_mean = explainer_mean.explain_instance(
+        #     anchor_instance,
+        #     xgb_cl,
+        #     mode="conformal",
+        #     query_label=label_to_exclude,
+        #     qhat=qhat,
+        #     threshold=0.95,
+        #     delta=0.01,
+        #     tau=0.15,
+        #     beam_size=beam_size,
+        #     # assuming your AnchorTabularExplainer supports this:
+        #     mean_instances=mean_instances_binned,
+        # )
 
-        runtime_mean = time.time() - t0_mode
-        f.write(f"Runtime (mean-instances mode): {runtime_mean:.4f} seconds\n")
+        # runtime_mean = time.time() - t0_mode
+        # f.write(f"Runtime (mean-instances mode): {runtime_mean:.4f} seconds\n")
 
-        f.write("Main anchor: %s\n" % (' AND '.join(exp_mean.names())))
-        f.write("Precision: %.3f\n" % exp_mean.precision())
-        f.write("Coverage: %.5f\n" % exp_mean.coverage())
-        f.write("Cumulative coverage: %.5f\n" % exp_mean.cumulative_coverage())
+        # f.write("Main anchor: %s\n" % (' AND '.join(exp_mean.names())))
+        # f.write("Precision: %.3f\n" % exp_mean.precision())
+        # f.write("Coverage: %.5f\n" % exp_mean.coverage())
+        # f.write("Cumulative coverage: %.5f\n" % exp_mean.cumulative_coverage())
 
-        main_names_mean = exp_mean.names()
-        main_applies_mean = anchor_applies_to_instance(main_names_mean, new_patient)
-        main_proc_score_mean = anchor_procedural_score(main_names_mean, FEATURE_DOMAINS)
-        proc_prec_main_mean, delta_main_mean, is_procedural_main_mean = compute_procedural_stats_for_anchor(
-            main_names_mean,
-            orig_precision=exp_mean.precision(),
-            neighbors_df=subset_new_patient,
-            pred_sets_names=pred_sets_names,
-            label_to_exclude=label_to_exclude,
-        )
+        # main_names_mean = exp_mean.names()
+        # main_applies_mean = anchor_applies_to_instance(main_names_mean, new_patient)
+        # main_proc_score_mean = anchor_procedural_score(main_names_mean, FEATURE_DOMAINS)
+        # proc_prec_main_mean, delta_main_mean, is_procedural_main_mean = compute_procedural_stats_for_anchor(
+        #     main_names_mean,
+        #     orig_precision=exp_mean.precision(),
+        #     neighbors_df=subset_new_patient,
+        #     pred_sets_names=pred_sets_names,
+        #     label_to_exclude=label_to_exclude,
+        # )
     
-        f.write(f"Does MAIN anchor (mean-instances) apply to patient? {main_applies_mean}\n")
-        f.write(
-            "Procedural score (main, mean-instances): "
-            f"{'%.3f' % main_proc_score_mean if main_proc_score_mean is not None else 'NA'};\n"
+        # f.write(f"Does MAIN anchor (mean-instances) apply to patient? {main_applies_mean}\n")
+        # f.write(
+        #     "Procedural score (main, mean-instances): "
+        #     f"{'%.3f' % main_proc_score_mean if main_proc_score_mean is not None else 'NA'};\n"
             
-        )
-        f.write(
-            "resampled_precision(main, mean-instances)= "
-            f"{'%.3f' % proc_prec_main_mean if proc_prec_main_mean is not None else 'NA'}, "
-            f"delta={ '%.3f' % delta_main_mean if delta_main_mean is not None else 'NA' }; "
-            f"is_procedural={is_procedural_main_mean}\n"
-        )
+        # )
+        # f.write(
+        #     "resampled_precision(main, mean-instances)= "
+        #     f"{'%.3f' % proc_prec_main_mean if proc_prec_main_mean is not None else 'NA'}, "
+        #     f"delta={ '%.3f' % delta_main_mean if delta_main_mean is not None else 'NA' }; "
+        #     f"is_procedural={is_procedural_main_mean}\n"
+        # )
 
-        num_valid_apply_mean = 0
-        num_proc_anchors_mean = 0
-        if len(valid_anchors_mean) > 0:
-            num_feats_each_m = [len(va['feature']) for va in valid_anchors_mean]
-            avg_feats_mean = float(np.mean(num_feats_each_m))
-            unique_feats_mean = set()
-            for va in valid_anchors_mean:
-                unique_feats_mean |= set(va['feature'])
+        # num_valid_apply_mean = 0
+        # num_proc_anchors_mean = 0
+        # if len(valid_anchors_mean) > 0:
+        #     num_feats_each_m = [len(va['feature']) for va in valid_anchors_mean]
+        #     avg_feats_mean = float(np.mean(num_feats_each_m))
+        #     unique_feats_mean = set()
+        #     for va in valid_anchors_mean:
+        #         unique_feats_mean |= set(va['feature'])
 
-                if anchor_applies_to_instance(va['names'], new_patient):
-                    num_valid_apply_mean += 1
-                proc_prec_va, delta_va, is_proc_va = compute_procedural_stats_for_anchor(
-                    va['names'],
-                    orig_precision=va['precision'][-1],
-                    neighbors_df=subset_new_patient,
-                    pred_sets_names=pred_sets_names,
-                    label_to_exclude=label_to_exclude,
-                )
-                if delta_va is not None:
-                    ALL_ANCHOR_DELTAS['mean'].append(delta_va)
-                if is_proc_va:
-                    num_proc_anchors_mean += 1
+        #         if anchor_applies_to_instance(va['names'], new_patient):
+        #             num_valid_apply_mean += 1
+        #         proc_prec_va, delta_va, is_proc_va = compute_procedural_stats_for_anchor(
+        #             va['names'],
+        #             orig_precision=va['precision'][-1],
+        #             neighbors_df=subset_new_patient,
+        #             pred_sets_names=pred_sets_names,
+        #             label_to_exclude=label_to_exclude,
+        #         )
+        #         if delta_va is not None:
+        #             ALL_ANCHOR_DELTAS['mean'].append(delta_va)
+        #         if is_proc_va:
+        #             num_proc_anchors_mean += 1
 
-            num_unique_feats_mean = len(unique_feats_mean)
-        else:
-            avg_feats_mean = 0.0
-            num_unique_feats_mean = 0
+        #     num_unique_feats_mean = len(unique_feats_mean)
+        # else:
+        #     avg_feats_mean = 0.0
+        #     num_unique_feats_mean = 0
 
-        f.write(
-            f"#valid anchors (mean-instances) applying to patient: "
-            f"{num_valid_apply_mean} / {len(valid_anchors_mean)}\n"
-        )
-        f.write(
-            f"#procedural anchors (mean-instances, delta<={DELTA_PROCEDURAL_THRESHOLD}): "
-            f"{num_proc_anchors_mean} / {len(valid_anchors_mean)}\n"
-        )
+        # f.write(
+        #     f"#valid anchors (mean-instances) applying to patient: "
+        #     f"{num_valid_apply_mean} / {len(valid_anchors_mean)}\n"
+        # )
+        # f.write(
+        #     f"#procedural anchors (mean-instances, delta<={DELTA_PROCEDURAL_THRESHOLD}): "
+        #     f"{num_proc_anchors_mean} / {len(valid_anchors_mean)}\n"
+        # )
 
-        sorted_valid_anchors_mean = sorted(
-            valid_anchors_mean,
-            key=lambda va: va['coverage'][-1],
-            reverse=True
-        )
-        num_only_generic_mean = sum(
-            1 for va in valid_anchors_mean
-            if is_only_generic_symptoms_anchor(va['names'])
-        )
+        # sorted_valid_anchors_mean = sorted(
+        #     valid_anchors_mean,
+        #     key=lambda va: va['coverage'][-1],
+        #     reverse=True
+        # )
+        # num_only_generic_mean = sum(
+        #     1 for va in valid_anchors_mean
+        #     if is_only_generic_symptoms_anchor(va['names'])
+        # )
 
-        f.write(
-            f"#anchors with ONLY generic symptoms (mean-instances): "
-            f"{num_only_generic_mean} / {len(valid_anchors_mean)}\n"
-        )
+        # f.write(
+        #     f"#anchors with ONLY generic symptoms (mean-instances): "
+        #     f"{num_only_generic_mean} / {len(valid_anchors_mean)}\n"
+        # )
 
-        for i, va in enumerate(sorted_valid_anchors_mean, 1):
-            names = " AND ".join(va['names'])
-            prec = va['precision'][-1]
-            cov = va['coverage'][-1]
-            applies = anchor_applies_to_instance(va['names'], new_patient)
-            score_va = anchor_procedural_score(va['names'], FEATURE_DOMAINS)
-            proc_prec_va, delta_va, is_proc_va = compute_procedural_stats_for_anchor(
-                va['names'],
-                orig_precision=prec,
-                neighbors_df=subset_new_patient,
-                pred_sets_names=pred_sets_names,
-                label_to_exclude=label_to_exclude,
-            )
-            f.write(
-                f"  {i}) {names}  |  precision={prec:.3f}, coverage={cov:.5f}, "
-                f"applies_to_patient={applies}\n"
-            )
-            f.write(
-                f"     procedural_score(domain)={ '%.3f' % score_va if score_va is not None else 'NA' }, "
-                f"resampled_precision={ '%.3f' % proc_prec_va if proc_prec_va is not None else 'NA' }, "
-                f"delta={ '%.3f' % delta_va if delta_va is not None else 'NA' }, "
-                f"is_procedural={is_proc_va}\n"
-            )
-        f.write("\n")
+        # for i, va in enumerate(sorted_valid_anchors_mean, 1):
+        #     names = " AND ".join(va['names'])
+        #     prec = va['precision'][-1]
+        #     cov = va['coverage'][-1]
+        #     applies = anchor_applies_to_instance(va['names'], new_patient)
+        #     score_va = anchor_procedural_score(va['names'], FEATURE_DOMAINS)
+        #     proc_prec_va, delta_va, is_proc_va = compute_procedural_stats_for_anchor(
+        #         va['names'],
+        #         orig_precision=prec,
+        #         neighbors_df=subset_new_patient,
+        #         pred_sets_names=pred_sets_names,
+        #         label_to_exclude=label_to_exclude,
+        #     )
+        #     f.write(
+        #         f"  {i}) {names}  |  precision={prec:.3f}, coverage={cov:.5f}, "
+        #         f"applies_to_patient={applies}\n"
+        #     )
+        #     f.write(
+        #         f"     procedural_score(domain)={ '%.3f' % score_va if score_va is not None else 'NA' }, "
+        #         f"resampled_precision={ '%.3f' % proc_prec_va if proc_prec_va is not None else 'NA' }, "
+        #         f"delta={ '%.3f' % delta_va if delta_va is not None else 'NA' }, "
+        #         f"is_procedural={is_proc_va}\n"
+        #     )
+        # f.write("\n")
 
-        results.append({
-            'instance_idx': new_patient_idx,
-            'mode': 'mean',
-            'main_precision': exp_mean.precision(),
-            'main_coverage': exp_mean.coverage(),
-            'cumulative_coverage': exp_mean.cumulative_coverage(),
-            'avg_feats_valid': avg_feats_mean,
-            'num_unique_feats_valid': num_unique_feats_mean,
-            'num_valid_anchors': len(valid_anchors_mean),
-            'num_procedural_anchors': num_proc_anchors_mean,
-            'main_applies': int(main_applies_mean),
-            'num_valid_apply': num_valid_apply_mean,
-            'main_procedural_score': main_proc_score_mean,
-            'procedural_resampled_precision_main': proc_prec_main_mean,
-            'procedural_delta_main': delta_main_mean,
-            'main_is_procedural': int(is_procedural_main_mean),
-            'runtime': runtime_mean,
-            'num_only_generic_anchors': num_only_generic_mean,
-        })
+        # results.append({
+        #     'instance_idx': new_patient_idx,
+        #     'mode': 'mean',
+        #     'main_precision': exp_mean.precision(),
+        #     'main_coverage': exp_mean.coverage(),
+        #     'cumulative_coverage': exp_mean.cumulative_coverage(),
+        #     'avg_feats_valid': avg_feats_mean,
+        #     'num_unique_feats_valid': num_unique_feats_mean,
+        #     'num_valid_anchors': len(valid_anchors_mean),
+        #     'num_procedural_anchors': num_proc_anchors_mean,
+        #     'main_applies': int(main_applies_mean),
+        #     'num_valid_apply': num_valid_apply_mean,
+        #     'main_procedural_score': main_proc_score_mean,
+        #     'procedural_resampled_precision_main': proc_prec_main_mean,
+        #     'procedural_delta_main': delta_main_mean,
+        #     'main_is_procedural': int(is_procedural_main_mean),
+        #     'runtime': runtime_mean,
+        #     'num_only_generic_anchors': num_only_generic_mean,
+        # })
 
         # ----------------------------------------------------
         # 8) MEDOID MODE (KMedoids + RAW Gower)
@@ -1147,7 +1153,7 @@ with open(output_path, "w") as f:
                 threshold=0.95,
                 delta=0.01,
                 tau=0.15,
-                beam_size=7
+                beam_size=beam_size_medoid
             )
             num_only_generic_med = sum(
                 1 for va in valid_anchors_m
