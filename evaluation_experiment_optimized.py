@@ -677,8 +677,8 @@ start_time = time.time()
 # ---------------------------------------------------------
 n_instances = 1000
 n_instances = min(n_instances, len(X_test))   # safety
-beam_size = 5
-beam_size_medoid = 5
+beam_size = 5 #1 #10
+beam_size_medoid = 5 #1 #10 
 alpha = 0.01
 mode_max_workers = 2
 medoid_max_workers = 4
