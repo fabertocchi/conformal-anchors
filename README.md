@@ -57,8 +57,8 @@ pip install -e .
 
 | File | Description |
 |------|-------------|
-| `evaluation_experiment.py` | OS, MG, and CG modes evaluated on 1000 test instances |
-| `complete_experiment_excluding_TRUE_label.py` | Marginal guarantee stress test where the excluded label is the true label |
+| `evaluation_experiment_optimized.py` | OS, MG, and CG modes evaluated on 1000 test instances |
+| `complete_experiment_excluding_TRUE_label_optimized.py` | Marginal guarantee stress test where the excluded label is the true label |
 | `specific_experiment_case_studies.py` | Qualitative case studies on individual patients |
 | `beam_size_experiment.py` | Ablation: union coverage vs. beam size |
 | `beam_size_coverage_runtime.py` | Ablation: coverage and runtime vs. beam size |
