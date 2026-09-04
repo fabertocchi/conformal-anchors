@@ -7,7 +7,7 @@
    This repository evaluates the framework on a synthetic medical diagnosis scenario: 100 000 patients described by generic symptoms and group-specific diagnostic tests, labeled with one of 10 diseases across two organ groups (Lung, Stomach). The underlying classifier is a XGBoost model.
 
    The paper accompanying this work, **Elementary, My Dear Classifier: Interpretable
-   Hypothesis Exclusion with Conformal Anchors** is available in this repository as [Conformal_Anchors_Barbera_Bertocchi_Passerini.pdf](Conformal_Anchors_Barbera_Bertocchi_Passerini.pdf).
+   Hypothesis Exclusion with Conformal Anchors**, is available in this repository as [Conformal_Anchors_Barbera_Bertocchi_Passerini.pdf](Conformal_Anchors_Barbera_Bertocchi_Passerini.pdf).
 
 ## Setup
 
